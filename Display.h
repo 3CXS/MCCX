@@ -14,14 +14,18 @@ namespace Display {
     void setBrightness(uint8_t bright);
     EasyNex* getInstance(); // optional, if you need direct access
     void writeXString(uint16_t x, uint16_t y,
-                      uint16_t w = 16, uint16_t h = 16,
+                      uint16_t w = 14, uint16_t h = 18,
                       uint8_t font = 0,
-                      uint32_t color = 65535,
-                      uint8_t align = 0,
+                      uint16_t fgColor = 65535,
+                      uint16_t bgColor = 0,
+                      uint8_t alignH = 0,
+                      uint8_t alignV = 0,
+                      uint8_t fill = 3,
                       const char* text = "");
 
-    void draw32XRow(uint16_t startX, uint16_t startY, uint8_t spacing = 4);
+    void draw32XRow(uint16_t startX, uint16_t startY, uint8_t spacing = 0);
 
 } // namespace Display
 
 #endif
+

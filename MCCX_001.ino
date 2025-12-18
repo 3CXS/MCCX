@@ -147,7 +147,7 @@
 
         //Display::writeCmd("fill 144,122,12,236,33840");
         //Display::writeCmd("draw 144,122,156,358,33840");
-        Display::draw32XRow(143, 341, 0);
+        // Display::draw32XRow(143, 341, 0);
 
     }
 

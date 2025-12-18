@@ -6,6 +6,7 @@
 static constexpr uint8_t PREROLL_BEATS = 4;
 static constexpr uint32_t PREROLL_TICKS = PREROLL_BEATS * PPQN;
 static uint16_t lastPhPos = 0xFFFF;
+static uint8_t pianoStartNote = 36; // C2 default
 
 namespace Sequencer {
 
@@ -207,15 +208,6 @@ namespace Sequencer {
         lastPhPos=0xFFFF;
     }
 
-    void initDisplayObjectNames(uint16_t totalSteps) {
-        if(totalSteps>MAX_VISIBLE_STEPS) totalSteps=MAX_VISIBLE_STEPS;
-        for(uint16_t i=0;i<totalSteps;i++){
-            snprintf(stepObjName[i],sizeof(stepObjName),"p%04d.txt",i);
-            lastCellState[i]=0xFF;
-        }
-        lastPhPos=0xFFFF;
-    }
-
     void alignViewportToPlayhead(uint32_t stepIndex){
         // Don't scroll viewport during preroll
         if(transport == PREROLL && prerollActive) return;
@@ -233,143 +225,234 @@ namespace Sequencer {
 
     void markStepEvent(uint32_t tick, uint8_t vel) {
         uint32_t step = tick / TICKS_PER_STEP;
-        if(step < TOTAL_STEPS) stepHasEvent[step] = (vel > 0);
+        if(step < TOTAL_STEPS) stepHasEvent[step] = (vel > 0); 
+    }
+
+    static inline bool tickHasNote(const Tick& t, uint8_t note) {
+        for (uint8_t i = 0; i < t.count; i++) {
+            if (t.events[i].note == note && t.events[i].vel > 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ---------------------- DISPLAY UPDATE ----------------------
 
-        #define PLAYHEAD_COLOR 48631  // light gray (RGB565)
-        #define GRID_Y 122             // top of your grid
-        #define GRID_H 236            // total height of 12 rows, adjust as needed
-        #define STEP_W 12 
+    #define PLAYHEAD_COLOR 48631  // light gray (RGB565)
+    #define GRID_Y 122             // top of your grid
+    #define GRID_H 236            // total height of 12 rows, adjust as needed
+    #define STEP_W 12 
 
-        void drawPlayhead2(uint16_t columnIndex) {
-            uint16_t x = columnIndex;  // horizontal position
+    void drawPlayhead(uint16_t columnIndex) {
+        uint16_t x = columnIndex;  // horizontal position
 
-            String cmd = "draw ";
-            cmd += x;
-            cmd += ",";
-            cmd += GRID_Y;
-            cmd += ",";
-            cmd += x + STEP_W;
-            cmd += ",";
-            cmd += GRID_Y + GRID_H;
-            cmd += ",";
-            cmd += PLAYHEAD_COLOR;
+        String cmd = "draw ";
+        cmd += x;
+        cmd += ",";
+        cmd += GRID_Y;
+        cmd += ",";
+        cmd += x + STEP_W;
+        cmd += ",";
+        cmd += GRID_Y + GRID_H;
+        cmd += ",";
+        cmd += PLAYHEAD_COLOR;
 
-            Display::writeCmd(cmd.c_str());
+        Display::writeCmd(cmd.c_str());
+    }
+
+    void erasePlayhead(uint16_t columnIndex) {
+        uint16_t x = columnIndex;
+
+        String cmd = "draw ";
+        cmd += x;
+        cmd += ",";
+        cmd += GRID_Y;
+        cmd += ",";
+        cmd += x + STEP_W;
+        cmd += ",";
+        cmd += GRID_Y + GRID_H;
+        cmd += ",";
+        cmd += 0;  // background color
+
+        Display::writeCmd(cmd.c_str());
+
+        // redraw notes under this column if needed
+        redrawStepColumn(columnIndex);
+    }
+
+    void redrawStepColumn(uint16_t columnIndex) {
+        const uint8_t numRows = 12;
+        const uint16_t startX = X_OFFSET;
+        const uint16_t startY = 121;
+        const uint16_t rowHeight = 20;
+        const uint8_t spacingY = 2;
+        const uint16_t stepW = DISPLAY_PIXELS / MAX_VISIBLE_STEPS;
+
+        for (uint8_t row = 0; row < numRows; row++) {
+            uint8_t note = pianoStartNote + row;
+            if (note >= 128) break;
+
+            uint16_t y = startY + row * (rowHeight + spacingY);
+            uint16_t step = view.startStep + columnIndex;
+            if (step >= TOTAL_STEPS) continue;
+
+            uint32_t tickIndex = (step * TICKS_PER_STEP) % TICKS_PER_PATTERN;
+
+            if (tickHasNote(pattern[tickIndex], note)) {
+                uint16_t x = startX + columnIndex * stepW;
+                Display::writeXString(
+                    x, y,
+                    stepW, rowHeight,
+                    0, 65535, 0, 0, 0, 3,
+                    "X"
+                );
+            }
+        }
+    }
+
+    int16_t lastPhStep = -1;        // step index of previous playhead
+    uint16_t lastPhStartNote = 0;   // top note of previous viewport
+    uint16_t lastViewStartStep = 0; 
+    
+    void drawPianoPattern(uint8_t firstNote, uint8_t numNotes) {
+        const uint8_t stepsVisible = MAX_VISIBLE_STEPS;
+        const uint16_t startX = X_OFFSET;
+        const uint16_t startY = 121;
+        const uint16_t rowHeight = 20;
+        const uint8_t spacingY = 2;
+        const uint16_t stepW = DISPLAY_PIXELS / stepsVisible;
+
+        for (uint8_t row = 0; row < numNotes; row++) {
+            uint8_t note = firstNote + row;
+            if (note >= 128) break;
+
+            uint16_t y = startY + row * (rowHeight + spacingY);
+
+            for (uint8_t s = 0; s < stepsVisible; s++) {
+                uint16_t step = view.startStep + s;
+                if (step >= TOTAL_STEPS) break;
+
+                uint32_t tickIndex = (step * TICKS_PER_STEP) % TICKS_PER_PATTERN;
+
+                if (tickHasNote(pattern[tickIndex], note)) {
+                    uint16_t x = startX + s * stepW;
+                    Display::writeXString(
+                        x, y,
+                        stepW, rowHeight,
+                        0,          // font
+                        65535,      // white
+                        0,          // bg color (ignored)
+                        0, 0, 3,    // align left/top, no fill (transparent)
+                        "X"
+                    );
+                }
+            }
+        }
+    }
+
+    /*
+    void updatePianoPlayhead(uint16_t stepIndex, uint8_t startNote) {
+        const uint16_t numRows = 12;
+        const uint16_t startX = 143;
+        const uint16_t rowHeight = 24;
+        const uint8_t spacingY = 2;
+
+        // Erase old playhead if visible in previous viewport
+        if (lastPhStep >= 0) {
+            int16_t oldStepIndex = lastPhStep;
+            int16_t oldPhIndex = lastPhStep  - lastViewStartStep;
+            uint16_t oldPhX = X_OFFSET + (DISPLAY_PIXELS / view.steps) * oldPhIndex;
+            for (uint8_t i = 0; i < numRows; i++) {
+                uint16_t oldPhY = 341 + i * (rowHeight + spacingY);
+                erasePlayhead(oldPhX);  // implement erase for rectangle
+            }
         }
 
+        // Draw new playhead across all visible rows
+        int phIndex = stepIndex - view.startStep;
 
-        void erasePlayhead2(uint16_t columnIndex) {
-            uint16_t x = columnIndex;
-
-            String cmd = "draw ";
-            cmd += x;
-            cmd += ",";
-            cmd += GRID_Y;
-            cmd += ",";
-            cmd += x + STEP_W;
-            cmd += ",";
-            cmd += GRID_Y + GRID_H;
-            cmd += ",";
-            cmd += 0;  // background color
-
-            Display::writeCmd(cmd.c_str());
-
-            // redraw notes under this column if needed
-            //redrawStepColumn(columnIndex);
+        for (uint8_t i = 0; i < numRows; i++) {
+            uint16_t phX = X_OFFSET + (DISPLAY_PIXELS / view.steps) * phIndex;
+            uint16_t phY = 341 + i * (rowHeight + spacingY);
+            drawPlayhead(phX);           // implement draw rectangle
         }
 
-        void drawPlayhead(uint16_t columnIndex) {
-            uint16_t x = columnIndex;  // horizontal position
+        lastPhStep = stepIndex;
+        lastPhStartNote = startNote;
+    }
+    */
 
-            String cmd = "fill ";
-            cmd += x;
-            cmd += ",";
-            cmd += GRID_Y;
-            cmd += ",";
-            cmd += STEP_W;
-            cmd += ",";
-            cmd += GRID_H;
-            cmd += ",";
-            cmd += PLAYHEAD_COLOR;
-
-            Display::writeCmd(cmd.c_str());
+    void updatePlayhead(uint16_t stepIndex) {
+        // erase old playhead if it was visible in the previous viewport
+        if (lastPhStep  >= 0) {
+            int16_t oldPhIndex = lastPhStep  - lastViewStartStep;
+            if (oldPhIndex >= 0 && oldPhIndex < view.steps) {
+                uint16_t oldPhX = X_OFFSET + (DISPLAY_PIXELS / view.steps) * oldPhIndex;
+                erasePlayhead(oldPhX);
+            }
         }
 
-
-        void erasePlayhead(uint16_t columnIndex) {
-            uint16_t x = columnIndex;
-
-            String cmd = "fill ";
-            cmd += x;
-            cmd += ",";
-            cmd += GRID_Y;
-            cmd += ",";
-            cmd += STEP_W;
-            cmd += ",";
-            cmd += GRID_H;
-            cmd += ",";
-            cmd += 0;  // background color
-
-            Display::writeCmd(cmd.c_str());
-
-            // redraw notes under this column if needed
-            //redrawStepColumn(columnIndex);
-        }
-
-        uint16_t lastColumn = 0;
-
-
-    void updateSequencerDisplay(uint32_t playTick) {
-        uint16_t stepIndex = playTick / TICKS_PER_STEP;
-        alignViewportToPlayhead(stepIndex);
-
-        // Pattern
-        for (uint16_t i = 0; i < view.steps; i++) {
-            uint16_t step = view.startStep + i;
-            if (step >= TOTAL_STEPS) break;
-
-            uint8_t newState = stepHasEvent[step] ? 1 : 0;
-            if (newState != lastCellState[i] || i == (stepIndex - view.startStep)) {
-                lastCellState[i] = newState;
-                Display::writeStr(stepObjName[i], stepHasEvent[step] ? "X" : " ");
-            } 
-        }
-        
-        // Playhead
+        // draw new playhead if within current viewport
         int phIndex = stepIndex - view.startStep;
         if (phIndex >= 0 && phIndex < view.steps) {
             uint16_t phX = X_OFFSET + (DISPLAY_PIXELS / view.steps) * phIndex;
-            if (phX != lastPhPos) {
+            drawPlayhead(phX);
+            lastPhStep = stepIndex;             // store absolute step
+            lastViewStartStep = view.startStep; // store viewport start
+        } else {
+            lastPhStep = -1;                    // not visible
+        }
+    }
 
-                // erase old playhead
-                if (lastPhPos >= 0) {
-                    erasePlayhead2(lastPhPos);
-                }
-                // draw new playhead
-                drawPlayhead2(phX);
-                //Display::writeNum("playh.x", phX);
-                lastPhPos = phX;
+    void updateSequencerDisplay(uint32_t playTick) {
+        uint16_t stepIndex = playTick / TICKS_PER_STEP;
+
+        // 1️⃣ Update horizontal viewport if needed
+        alignViewportToPlayhead(stepIndex);
+
+        // 2️⃣ Draw piano pattern (triggers) for visible rows
+        drawPianoPattern(pianoStartNote, 12);
+
+        // 3️⃣ Update playhead
+        int phIndex = stepIndex - view.startStep;
+
+        // Erase old playhead if visible in previous viewport
+        if (lastPhStep >= 0) {
+            int16_t oldPhIndex = lastPhStep - lastViewStartStep;
+            if (oldPhIndex >= 0 && oldPhIndex < view.steps) {
+                uint16_t oldPhX = X_OFFSET + oldPhIndex * STEP_W;
+                erasePlayhead(oldPhX);
             }
         }
-        
-        // Step/bar counters
+
+        // Draw new playhead if within current viewport
+        if (phIndex >= 0 && phIndex < view.steps) {
+            uint16_t phX = X_OFFSET + phIndex * STEP_W;
+            drawPlayhead(phX);
+            lastPhStep = stepIndex;
+            lastViewStartStep = view.startStep;
+        } else {
+            lastPhStep = -1;
+        }
+
+        // 4️⃣ Update step/bar counters
         uint32_t bar = stepIndex / STEPS_PER_BAR;
         uint8_t beat = (stepIndex / (STEPS_PER_BAR / BEATS_PER_BAR)) % BEATS_PER_BAR;
         uint16_t stepInBar = stepIndex % STEPS_PER_BAR;
+
         Display::writeNum("bars.val", bar + 1);
         Display::writeNum("step4.val", beat + 1);
         Display::writeNum("step16.val", stepInBar + 1);
-        
     }
+
+
 
     // ------------------ INIT ------------------
     void init( uint16_t zoomBars) {
 
         initView(zoomBars);
-        initDisplayObjectNames(MAX_VISIBLE_STEPS);
+        //initDisplayObjectNames(MAX_VISIBLE_STEPS);
         clearPattern();
         clearpatterndisplay();
 

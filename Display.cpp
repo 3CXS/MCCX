@@ -36,7 +36,6 @@ namespace Display {
         return displayInstance;
     }
 
-
     void writeXString(uint16_t x, uint16_t y,
                     uint16_t w, uint16_t h,
                     uint8_t font,
@@ -65,8 +64,8 @@ namespace Display {
 
     void draw32XRow(uint16_t startX, uint16_t startY, uint8_t spacing) {
         const uint8_t count = 32;
-        const uint16_t charW = 16;
-        const uint16_t charH = 20;
+        const uint16_t charW = 14;
+        const uint16_t charH = 18;
 
         for (uint8_t i = 0; i < count; i++) {
             uint16_t x = startX + i * (charW + spacing);

@@ -39,7 +39,7 @@ namespace Input {
 
     // ---------------- MAIN ENCODER ----------------
     extern Encoder MainEnc;
-    extern long oldMainEncPos;
+    //extern long oldMainEncPos;
     void mainEncoder();
 
     // ---------------- QUAD ENCODERS ----------------

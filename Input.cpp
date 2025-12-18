@@ -44,12 +44,12 @@ namespace Input {
     long oldMainEncPos = -999;
 
     void mainEncoder() {
-        long newPosition = -MainEnc.read() / 4;  // raw encoder position
+        long newPosition = -MainEnc.read();  // raw encoder position
         if (newPosition != oldMainEncPos) {
             int32_t delta = newPosition - oldMainEncPos;
 
             if (shiftActive) {
-                // Non-linear scaling for fine adjustments
+                // BPM
                 float sign = (delta >= 0) ? 1.0f : -1.0f;
                 float absDelta = abs(delta);
                 float scaledDelta = sign * pow(absDelta, 1.5f) * 0.5f; // tweak for sensitivity
@@ -62,7 +62,11 @@ namespace Input {
             } else if (!Sequencer::isPlaying) {
                 // Scrub mode
                 Sequencer::scrubMode = true;
-                int32_t newTick = Sequencer::playheadTick + delta * TICKS_PER_STEP;
+                float sign = (delta >= 0) ? 1.0f : -1.0f;
+                float absDelta = abs(delta);
+                float scaledDelta = sign * pow(absDelta, 1.5f) * 0.25f; // tweak for sensitivity
+
+                int32_t newTick = Sequencer::playheadTick + scaledDelta * TICKS_PER_STEP;
                 newTick = constrain(newTick, 0, TICKS_PER_PATTERN - 1);
                 Sequencer::playheadTick = (uint32_t)newTick;
 
@@ -71,6 +75,7 @@ namespace Input {
             }
 
         oldMainEncPos = newPosition;
+
         }
     }
 
