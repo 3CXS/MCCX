@@ -47,7 +47,7 @@ namespace AudioEngine {
     extern volatile uint8_t pend_note[64], pend_vel[64], pend_w, pend_r;
     bool popPending(uint8_t &note, uint8_t &vel);
     void pushPending(uint8_t note, uint8_t vel);
-    void processPending();
+    void processAudio();
 
     // ------------------ VOICE MANAGEMENT ------------------
     float midiToFreq(uint8_t note);

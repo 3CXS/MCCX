@@ -34,55 +34,7 @@ namespace Display {
 
     EasyNex* getInstance() {
         return displayInstance;
-    }
 
-    void writeXString(uint16_t x, uint16_t y,
-                    uint16_t w, uint16_t h,
-                    uint8_t font,
-                    uint16_t fgColor,
-                    uint16_t bgColor,
-                    uint8_t alignH,
-                    uint8_t alignV,
-                    uint8_t fill,
-                    const char* text) {
-
-        char cmd[160];
-        snprintf(cmd, sizeof(cmd),
-                "xstr %d,%d,%d,%d,%d,%d,%d,%d,%d,%d,\"%s\"",
-                x, y, w, h,
-                font,
-                fgColor,
-                bgColor,
-                alignH,
-                alignV,
-                fill,
-                text);
-
-        // IMPORTANT: send as RAW command
-        displayInstance->writeStr(cmd);
-    }
-
-    void draw32XRow(uint16_t startX, uint16_t startY, uint8_t spacing) {
-        const uint8_t count = 32;
-        const uint16_t charW = 14;
-        const uint16_t charH = 18;
-
-        for (uint8_t i = 0; i < count; i++) {
-            uint16_t x = startX + i * (charW + spacing);
-            writeXString(
-                x,
-                startY,
-                charW,
-                charH,
-                0,        // font
-                65535,    // white
-                0,        // background transparent
-                1,        // horizontal center
-                1,        // vertical center
-                3,        // fill = none (important!)
-                "X"
-            );
-        }
     }
 
 } // namespace Display

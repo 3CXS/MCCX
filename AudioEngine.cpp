@@ -94,7 +94,7 @@ namespace AudioEngine {
     }
 
     // Execute pending note events in main loop context
-    void processPending() {
+    void processAudio() {
         uint8_t n, v;
         while (popPending(n, v)) {
             if (v > 0) AudioEngine::noteOn(n, v);  // note-on

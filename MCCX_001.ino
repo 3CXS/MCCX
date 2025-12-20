@@ -142,22 +142,19 @@
         Sequencer::scrubMode = false;  
         Display::writeNum("bpm.val", Sequencer::getBPM()); 
         Display::writeNum("length.val", NUMBER_OF_BARS);
-        //Sequencer::testPattern16th(0.5f);
-        //Sequencer::updateSequencerDisplay(Sequencer::playheadTick);
 
-        //Display::writeCmd("fill 144,122,12,236,33840");
-        //Display::writeCmd("draw 144,122,156,358,33840");
-        // Display::draw32XRow(143, 341, 0);
+        Sequencer::testPattern16th(0.5f);
+        delay(200);
+        Sequencer::updateSequencerDisplay(Sequencer::playheadTick);
 
     }
-
-
 
 
     // ---LOOP---
     void loop() {
 
-      AudioEngine::processPending();
+      AudioEngine::processAudio();
+      Sequencer::processDisplay();
       Input::mainEncoder();
       Input::buttonpad();
       Input::encoders();

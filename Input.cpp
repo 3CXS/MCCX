@@ -19,13 +19,17 @@ namespace Input {
 
     uint8_t PLAY_FROM_START, PLAY_PAUSE, STOP, RECORD, ENCODER, RSHIFT;
     bool shiftActive = false;
+    bool scrollActive = false;
 
     void onPlayFromStart()      { Sequencer::onPlayFromStart(); }
     void onPlayPause()          { Sequencer::onPlayPause(); }
     void onStop()               { Sequencer::onStop(); }
     void onRecord()             { Sequencer::onRecord(); }
     void onShift()              { shiftActive = !shiftActive; }
-    void onEncoderButton()      { Serial.println("ENCODER BTN"); }
+    void onEncoderButton() { 
+        scrollActive = !scrollActive; 
+        Serial.println("ENCODER BTN"); 
+        }
 
     void initButtons() {
         mux.begin();
@@ -36,21 +40,21 @@ namespace Input {
         STOP            = manager.addMuxButton(&mux, 2, onStop, true);
         RECORD          = manager.addMuxButton(&mux, 3, onRecord, true);
         RSHIFT          = manager.addMuxButton(&mux, 10, onShift, false);
-        ENCODER         = manager.addDirectButton(4, onEncoderButton, false);
+        ENCODER         = manager.addDirectButton(4, onEncoderButton, true);
     }
 
     // ---------------- MAIN ENCODER ----------------
     Encoder MainEnc(2, 3);
     long oldMainEncPos = -999;
+    static int16_t scrollAccumulator = 0;
 
     void mainEncoder() {
-        long newPosition = -MainEnc.read();  // raw encoder position
+        long newPosition = MainEnc.read();  // raw encoder position
         if (newPosition != oldMainEncPos) {
             int32_t delta = newPosition - oldMainEncPos;
 
-            if (shiftActive) {
-                // BPM
-                float sign = (delta >= 0) ? 1.0f : -1.0f;
+            if (shiftActive) {  // BPM
+                float sign = (delta >= 0) ? -1.0f : 1.0f;
                 float absDelta = abs(delta);
                 float scaledDelta = sign * pow(absDelta, 1.5f) * 0.5f; // tweak for sensitivity
 
@@ -59,10 +63,27 @@ namespace Input {
                 bpm += scaledDelta;                    // apply small increment
                 Sequencer::setBPM(bpm);               // update sequencer
 
-            } else if (!Sequencer::isPlaying) {
-                // Scrub mode
+            }
+
+            else if (scrollActive) {  // NOTE SCROLL MODE
+                scrollAccumulator += delta;
+
+                // Only scroll when threshold reached
+                const int8_t threshold = 4; // one raster tick
+                while (scrollAccumulator >= threshold) {
+                    Sequencer::scrollNotes(+1);
+                    scrollAccumulator -= threshold;
+                }
+                while (scrollAccumulator <= -threshold) {
+                    Sequencer::scrollNotes(-1);
+                    scrollAccumulator += threshold;
+                }
+
+            }
+
+            else if (!Sequencer::isPlaying) {  // SCRUB MODE
                 Sequencer::scrubMode = true;
-                float sign = (delta >= 0) ? 1.0f : -1.0f;
+                float sign = (delta >= 0) ? -1.0f : 1.0f;
                 float absDelta = abs(delta);
                 float scaledDelta = sign * pow(absDelta, 1.5f) * 0.25f; // tweak for sensitivity
 
@@ -78,7 +99,6 @@ namespace Input {
 
         }
     }
-
 
     // ---------------- QUAD ENCODERS ----------------
     Adafruit_seesaw encA(&Wire1); // 0x49
@@ -234,6 +254,7 @@ namespace Input {
             // Record note if in recording mode
             if (Sequencer::isRecording && Sequencer::isPlaying) {
                 Sequencer::recordNoteEvent(note, Sequencer::getDefaultVelocity());
+                //Sequencer::ensureNoteVisible(note);
             }
 
         } else { // RELEASE
