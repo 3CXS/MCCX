@@ -27,6 +27,8 @@ namespace Input {
     extern uint8_t ENCODER;
     extern uint8_t RSHIFT;
     extern bool shiftActive;
+    extern bool f1Active;
+    extern bool f2Active;
 
     void onPlayFromStart();
     void onPlayPause();
@@ -34,12 +36,12 @@ namespace Input {
     void onRecord();
     void onShift();
     void onEncoderButton();
-
-    void initButtons();     // init MUX & ButtonManager
+    void onF2();
+    void showF1PadHints();
+    void clearF1PadHints();
 
     // ---------------- MAIN ENCODER ----------------
     extern Encoder MainEnc;
-    //extern long oldMainEncPos;
     void mainEncoder();
 
     // ---------------- QUAD ENCODERS ----------------
@@ -51,22 +53,23 @@ namespace Input {
     extern Adafruit_seesaw* encBoards[];
     extern const char* encNames[];
 
-    void processEncoderEvents();
+    void readEncoders();
+    void setEncoderPage(uint8_t page);
 
-    void encoders();
-
-    // ---------------- BUTTONPAD / TRELLIS ----------------
+    // ---------------- BUTTONPADS ----------------
     #define Y_DIM 4
     #define X_DIM 8
     extern Adafruit_NeoTrellis t_array[Y_DIM/4][X_DIM/4];
     extern Adafruit_MultiTrellis trellis;
-
     uint8_t keyToNote(uint8_t keyIndex);
+    void readPads();
     TrellisCallback keyPress();
-    void buttonpad();
+    void processTrellisLEDs();
 
-    // ---------------- INIT / POLL ----------------
-    void init();          // call in setup()
+    // ---------------- PROCESS  ----------------
+    void processInputEvents();
+    // ---------------- INIT  ----------------
+    void init();
 
 
 } //namespace InputModule

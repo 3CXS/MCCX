@@ -45,16 +45,48 @@ void ButtonManager::begin() {
     scanTimer.begin(scanISR, 1000); // 1 kHz
 }
 
-uint8_t ButtonManager::addMuxButton(Mux16* mux, uint8_t channel, BtnCallback cb, bool pressOnly) {
+
+uint8_t ButtonManager::addMuxButton(Mux16* mux, uint8_t channel, 
+                                    BtnCallback cbPress, BtnCallback cbRelease, 
+                                    bool pressOnly) {
     if (numButtons >= MAX_BUTTONS) return 255;
-    buttons[numButtons++] = {true, mux, channel, 0, cb, pressOnly, 1, 1, millis(), debounceMs};
+
+    buttons[numButtons++] = {
+        true,         // isMux
+        mux,
+        channel,
+        0,            // pin unused
+        cbPress,      // press callback
+        cbRelease,    // release callback
+        pressOnly,
+        1, 1,
+        millis(),
+        debounceMs
+    };
+
     return numButtons - 1;
 }
 
-uint8_t ButtonManager::addDirectButton(uint8_t pin, BtnCallback cb, bool pressOnly) {
+uint8_t ButtonManager::addDirectButton(uint8_t pin, 
+                                       BtnCallback cbPress, BtnCallback cbRelease, 
+                                       bool pressOnly) {
     if (numButtons >= MAX_BUTTONS) return 255;
+
     pinMode(pin, INPUT_PULLUP);
-    buttons[numButtons++] = {false, nullptr, 0, pin, cb, pressOnly, 1, 1, millis(), debounceMs};
+
+    buttons[numButtons++] = {
+        false,        // isMux
+        nullptr,
+        0,
+        pin,
+        cbPress,      // press callback
+        cbRelease,    // release callback
+        pressOnly,
+        1, 1,
+        millis(),
+        debounceMs
+    };
+
     return numButtons - 1;
 }
 
@@ -79,18 +111,20 @@ void ButtonManager::scanButtons() {
             b->lastChange = now;
             b->lastState = raw;
         }
-
         if ((now - b->lastChange) >= b->debounceMs) {
             if (raw != b->stableState) {
                 b->stableState = raw;
 
-                // Trigger callback
-                if (b->callback) {
-                    if (b->triggerOnPress && !b->stableState) {  // active-low pressed
-                        b->callback();
-                    } else if (!b->triggerOnPress) {
-                        b->callback();
+                // Trigger press/release callbacks
+                if (b->triggerOnPress) {
+                    if (!b->stableState && b->callbackPress) {   // pressed (active-low)
+                        b->callbackPress();
+                    } else if (b->stableState && b->callbackRelease) { // released
+                        b->callbackRelease();
                     }
+                } else {
+                    // level-sensitive
+                    if (b->callbackPress) b->callbackPress();
                 }
             }
         }

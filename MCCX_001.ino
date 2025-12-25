@@ -128,7 +128,7 @@
         delay(200);
         Display::writeStr("load.txt", "XXX");
 
-        Sequencer::init(2);
+        Sequencer::init();
         delay(200);
         Display::writeStr("load.txt", "XXXX");
 
@@ -137,28 +137,29 @@
         Serial.println("ALL INITIALIZED");
         delay(200);
         Display::writeCmd("page 1");
-
-        Sequencer::playheadTick = 0;
-        Sequencer::scrubMode = false;  
-        Display::writeNum("bpm.val", Sequencer::getBPM()); 
-        Display::writeNum("length.val", NUMBER_OF_BARS);
-
-        Sequencer::testPattern16th(0.5f);
         delay(200);
-        Sequencer::updateSequencerDisplay(Sequencer::playheadTick);
 
+        Sequencer::initView(2);
+        Display::writeNum("bpm.val", Sequencer::getBPM()); 
+        Display::writeNum("length.val", Sequencer::getSeqLength());
+
+        Sequencer::testPatternGumball(0.95f);
+        //Sequencer::updateSequencerDisplay(0);
     }
-
 
     // ---LOOP---
     void loop() {
 
       AudioEngine::processAudio();
       Sequencer::processDisplay();
+
       Input::mainEncoder();
-      Input::buttonpad();
-      Input::encoders();
-      Input::processEncoderEvents();  
+      Input::readPads();
+      Input::readEncoders();
+      
+      Input::processInputEvents();
+      Input::processTrellisLEDs();
+      
       //Display.NextionListen();
 
     }

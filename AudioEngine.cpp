@@ -35,36 +35,47 @@ namespace AudioEngine {
 
     uint8_t voiceNote[NUM_VOICES];
 
-
-
-
     void setSynthParam(SynthParam param, float value) {
         for (int i = 0; i < NUM_VOICES; i++) {
             switch (param) {
 
-            case SynthParam::FILTER_CUTOFF:
-                filter[i].frequency(value);
-                break;
+                case SynthParam::FILTER_CUTOFF:
+                    filter[i].frequency(value);
+                    break;
 
-            case SynthParam::FILTER_RESONANCE:
-                filter[i].resonance(value);
-                break;
+                case SynthParam::FILTER_RESONANCE:
+                    filter[i].resonance(value);
+                    break;
 
-            case SynthParam::BITCRUSH_BITS:
-                crusher[i].bits((int)value);
-                break;
+                case SynthParam::BITCRUSH_BITS:
+                    crusher[i].bits((int)value);
+                    break;
 
-            case SynthParam::OSC1_PULSE: {
-                static const float dutyTable[] = {
-                    0.125f, 0.25f, 0.5f, 0.75f
-                };
-                int idx = constrain((int)value, 0, 3);
-                oscA[i].pulseWidth(dutyTable[idx]);
-                break;
-            }
+                case SynthParam::OSC1_PULSE: {
+                    static const float dutyTable[] = {
+                        0.125f, 0.25f, 0.5f, 0.75f
+                    };
+                    int idx = constrain((int)value, 0, 3);
+                    oscA[i].pulseWidth(dutyTable[idx]);
+                    break;
+                }
 
-            default:
-                break;
+                case SynthParam::ENV_ATT:
+                    env[i].attack(value);
+                    break;
+                case SynthParam::ENV_DEC:
+                    env[i].decay(value);
+                    break;
+                case SynthParam::ENV_SUS:
+                    env[i].sustain(value);
+                    break;
+                case SynthParam::ENV_REL:
+                    env[i].release(value);
+                    break;
+                    
+                default:
+                    break;
+
             }
         }
     }
@@ -120,7 +131,7 @@ namespace AudioEngine {
         float f = midiToFreq(note);
 
         oscA[v].frequency(f);
-        oscB[v].frequency(f * 1.0f); // slight detune (or *2 for octave)
+        oscB[v].frequency(f * 2.0f); // slight detune (or *2 for octave)
 
         oscA[v].amplitude(1.0);
         oscB[v].amplitude(1.0);
@@ -208,10 +219,10 @@ namespace AudioEngine {
             filter[i].resonance(0.1);
 
             env[i].attack(0);
-            env[i].hold(5);
-            env[i].decay(40);
+            env[i].hold(0);
+            env[i].decay(10);
             env[i].sustain(5);
-            env[i].release(80);
+            env[i].release(20);
 
             // oscA -> oscMix
             patchCords[pc++] = new AudioConnection(oscA[i], 0, oscMix[i], 0);

@@ -8,5 +8,14 @@ static constexpr uint8_t NUM_VOICES = 4;
         FILTER_CUTOFF,
         FILTER_RESONANCE,
         BITCRUSH_BITS,
-        AMP_ATTACK
+        ENV_ATT,
+        ENV_DEC,
+        ENV_SUS,
+        ENV_REL,
+        AMP_ATTACK,
+        ARP_RATE,
+        ARP_OCTAVES,
+        ARP_MODE,
+        ARP_GATE,
     };
+

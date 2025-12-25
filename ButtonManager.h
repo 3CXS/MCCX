@@ -26,7 +26,8 @@ public:
         Mux16* mux;
         uint8_t channel;
         uint8_t pin;
-        BtnCallback callback;
+        BtnCallback callbackPress;
+        BtnCallback callbackRelease;
         bool triggerOnPress;      // true = trigger only on press, false = level-sensitive
         uint8_t stableState;      // last stable state
         uint8_t lastState;        // last raw state
@@ -36,8 +37,9 @@ public:
 
     ButtonManager(uint16_t debounce = 10);
 
-    uint8_t addMuxButton(Mux16* mux, uint8_t channel, BtnCallback cb, bool pressOnly = true);
-    uint8_t addDirectButton(uint8_t pin, BtnCallback cb, bool pressOnly = true);
+    uint8_t addMuxButton(Mux16* mux, uint8_t channel, BtnCallback cbPress, BtnCallback cbRelease = nullptr, bool pressOnly = true);
+
+    uint8_t addDirectButton(uint8_t pin, BtnCallback cbPress, BtnCallback cbRelease = nullptr, bool pressOnly = true);
 
     void begin();
 
