@@ -4,35 +4,23 @@
 
 #include <Arduino.h>
 #include <uClock.h>
-#include <EasyNextionLibrary.h>
 #include "AudioEngine.h"
 #include "Config.h"
-
-enum class QuantizeType {
-        OFF,
-        QUARTER,
-        SIXTEENTH,
-        THIRTYSECOND
-    };
-
-struct NoteRepeatVoice {
-        bool     active;
-        bool     noteOn;
-        uint8_t  note;
-        uint32_t nextTick;
-        uint32_t offTick;
-    };
 
 namespace Sequencer {
 
     // ------------------ CONFIG ------------------ //
+    #define MAX_SEQ_BARS 32
+    #define MAX_TRACKS 32
+    #define MAX_SEQUENCES 32
+    #define MAX_PATTERN_SLOTS 16
+
     #define PPQN               96
     #define BEATS_PER_BAR       4
     #define STEPS_PER_BAR      16
     #define TICKS_PER_STEP (PPQN * BEATS_PER_BAR / STEPS_PER_BAR)  // 24
     #define TICKS_PER_BAR  (PPQN * BEATS_PER_BAR)
 
-    #define MAX_SEQ_BARS 16
     #define MAX_PATTERN_TICKS  (MAX_SEQ_BARS * TICKS_PER_BAR)
     #define MAX_PATTERN_STEPS  (MAX_SEQ_BARS * STEPS_PER_BAR)
 
@@ -43,27 +31,95 @@ namespace Sequencer {
     #define DISPLAY_PIXELS        512
     #define X_OFFSET              144
 
-    // ------------------ SEQUENCER--------------------- //
-    // SEQ LENGTH
-    extern uint8_t seqLength; // number of bars (runtime variable)
-    void setSeqLength(uint8_t bars);
-    uint8_t getSeqLength();
-    uint32_t getMaxTicks();
-    uint16_t getTotalSteps();
+    // ------------------ DATA STRUCTURE--------------------- //
+    enum class EventType { NOTE_ON, NOTE_OFF, CC };
 
-    // BPM
-    float getBPM();
-    void setBPM(float bpm);
-    float getStartNote();
+    struct Event {
+        uint32_t tick;       // absolute tick
+        EventType type;
+        uint8_t note;        // or CC id
+        uint8_t value;       // velocity or CC value
+    };
+    constexpr uint16_t MAX_EVENTS_PER_PATTERN = 1024;
+    struct PatternSlot {
+        Event events[MAX_EVENTS_PER_PATTERN];
+        bool used;
+    };
+    
+    struct Pattern {
+        Event* events;       // dynamically allocated (or DMAMEM)
+        uint16_t count;      // current number of events
+        uint16_t maxEvents;  // max capacity
+        int8_t slotIndex = -1; 
+    };
 
-    // VEL
-    uint8_t getDefaultVelocity();
-    void setDefaultVelocity(uint8_t v);
+    struct TrackEventBuffer {
+        EventType* events;         // pointer to allocated pool for this track
+        uint16_t  count;           // number of events currently recorded
+        uint16_t  maxEvents;       // max events this buffer can hold
+    };
 
+    struct Track {
+        bool active = false;
+        bool mute   = false;
+        uint8_t type = 0;
+        uint8_t engineId = 0;
+        uint8_t midiCh = 1;
+
+        Pattern pattern;  // pattern with sparse events
+    };
+
+    struct Sequence {
+        uint8_t lengthBars = 4;
+        float   bpm        = 120.0f;
+        Track   tracks[MAX_TRACKS];
+    };
+
+    enum TrackType {
+        TRACK_SYNTH = 0,
+        TRACK_SAMPLER = 1,
+        TRACK_GRANULAR = 2,
+        TRACK_PERC = 3
+    };
+
+    // ------------------ FUNCTIONS --------------------- //
     // CLOCK
     void onTick(uint32_t tick);
     void onStep(uint32_t stepIndex);
     void handleClockContinue();
+
+    // SEQUENCE & TRACK 
+    extern Sequence sequences[MAX_SEQUENCES];
+    extern uint8_t currentSequence;
+    extern uint8_t currentTrack;
+
+    inline Sequence& curSeq() {return sequences[currentSequence];}
+    inline Track& curTrack() {return curSeq().tracks[currentTrack];}
+    
+    void setCurrentTrack(uint8_t t);
+    uint8_t getCurrentTrack();
+    void setTrackType(TrackType type);
+    void assignTrackToEngine(uint8_t engineId);
+    void toggleTrackMute(uint8_t track);
+    extern bool isTrackMuted(uint8_t track);
+    void initTrack(Track& tr, uint8_t index);
+
+    // PATTERN
+    extern bool trackHasPatternData(uint8_t trackIndex);
+    void clearPattern(uint8_t track);
+    void initPattern(Track& tr);
+
+    // EVENT
+    inline Event makeEvent(uint32_t tick, uint8_t note, uint8_t vel) {
+        Event e;
+        e.tick  = tick;
+        e.type  = (vel > 0) ? EventType::NOTE_ON : EventType::NOTE_OFF;
+        e.note  = note;
+        e.value = vel;
+        return e;
+    }
+    void markStepEvent(uint32_t tick, uint8_t note, uint8_t vel);
+    extern bool stepNoteHasEvent[MAX_PATTERN_STEPS][NOTE_RANGE];
 
     // TRANSPORT
     enum TransportState { STOPPED, PREROLL, PLAYING, PAUSED };
@@ -80,25 +136,29 @@ namespace Sequencer {
     void onStop();
     void onRecord();
 
-    // PATTERN
-    struct NoteEvent { uint8_t note; uint8_t vel; };
-    struct Tick { NoteEvent events[NUM_VOICES]; uint8_t count = 0; };
+    // RECORD
+    void recordNoteEvent(uint8_t trackId, uint8_t note, uint8_t vel);
+    void onOverdub();
+    void onRecord();
 
-    extern Tick pattern[MAX_PATTERN_TICKS];
+    // SEQ LENGTH
+    extern uint8_t seqLength; // number of bars (runtime variable)
+    void setSeqLength(uint8_t bars);
+    uint8_t getSeqLength();
+    uint32_t getMaxTicks();
+    uint16_t getTotalSteps();
 
-    extern bool stepNoteHasEvent[MAX_PATTERN_STEPS][NOTE_RANGE];
-    extern uint8_t lastCellState[DISPLAY_STEPS * MAX_NOTES_DISPLAY];
+    // BPM
+    float getBPM();
+    void setBPM(float bpm);
+    float getStartNote();
 
-    void recordNoteEvent(uint8_t note, uint8_t vel);
-    void clearPattern();
-    void setQuantizeMode(QuantizeType mode);
-    void markStepEvent(uint32_t tick, uint8_t note, uint8_t vel);
+    // VEL
+    uint8_t getDefaultVelocity();
+    void setDefaultVelocity(uint8_t v);
 
-    QuantizeType getQuantizeMode();
-
-    // NOTE REPEAT
-    enum class NoteRepeatRate {
-        OFF,
+    // TIMING DIVISION
+    enum class TimingDivision {
         QUARTER,
         EIGHTH,
         SIXTEENTH,
@@ -106,13 +166,29 @@ namespace Sequencer {
         THIRTYSECOND,
         THIRTYSECONDT
     };
+    uint32_t divisionToTicks(TimingDivision rate);
 
-    static constexpr uint8_t MAX_REPEAT_VOICES = 4;
+    extern TimingDivision noteRepeatRate;
+    extern TimingDivision arpRate;
+
+    // QUANTIZE
+    void setQuantizeDivision(TimingDivision rate);
+    void setQuantizeEnabled(bool on);
+
+    // NOTE REPEAT
+    struct NoteRepeatVoice {
+        bool     active;
+        bool     noteOn;
+        uint8_t  note;
+        uint32_t nextTick;
+        uint32_t offTick;
+        uint8_t  trackId;
+    };
+
+    constexpr uint8_t MAX_REPEAT_VOICES = 4;
     extern NoteRepeatVoice repeatVoices[MAX_REPEAT_VOICES];
-    extern NoteRepeatRate noteRepeatRate;
 
     extern uint32_t noteRepeatLastTick;
-
     extern bool noteRepeatActive;
     extern uint8_t noteRepeatNote;           // pad note currently repeating
     extern uint32_t noteRepeatInterval;      // interval in ticks
@@ -121,16 +197,12 @@ namespace Sequencer {
     extern uint32_t noteRepeatDurationTicks; // how long each repeat note sounds
     extern bool noteRepeatNoteOn;    
 
-    static constexpr uint8_t NOTE_REPEAT_GATE_PERCENT = 50;
-
-    uint32_t getNoteRepeatIntervalTicks(NoteRepeatRate rate);
-    void updateNoteRepeatLabel(NoteRepeatRate rate);
-
+    void setRepeatDivision(TimingDivision rate);
     void startNoteRepeat(uint8_t note);
     void stopNoteRepeat(uint8_t note);
 
     // ARPEGGIATOR
-    extern uint8_t numHeldNotes;
+    enum class ArpMode {OFF, UP_OCTAVE, HELD_NOTES };
     struct ArpVoice {
         bool active = false;
         uint8_t note = 0;
@@ -138,27 +210,20 @@ namespace Sequencer {
         uint32_t nextTick = 0;
         uint32_t offTick = 0;
         uint8_t stepIndex = 0;
+        uint8_t  trackId;
     };
 
-    extern ArpVoice arpVoice;  
-
-    enum class ArpMode {OFF, UP_OCTAVE, HELD_NOTES };
-    enum class ArpRate : uint8_t {QUARTER, EIGHTH, SIXTEENTH, SIXTEENTHT, THIRTYSECOND, THIRTYSECONDT };
-
     extern ArpMode arpMode;
-    extern ArpRate arpRate;
     extern uint8_t arpOctaves;
     extern float arpGate;
+    extern uint8_t numHeldNotes;
+    extern ArpVoice arpVoice;
 
     void recalcArpTiming();
-    
     void startArp(uint8_t note);
     void stopArp(uint8_t note);
     void processArp(uint32_t tick);
-    void updateArpLabel(ArpMode);
-
-    void onOverdub();
-    void onRecord();
+    void setArpMode(ArpMode mode);
 
     // ------------------ VIEW ----------------------- //
     struct ViewPort {
@@ -173,6 +238,7 @@ namespace Sequencer {
     extern bool viewportRedrawPending;
     void initView(uint8_t zoomBars);
     void updateDisplayPlayhead();
+    extern uint8_t lastCellState[DISPLAY_STEPS * MAX_NOTES_DISPLAY];
 
     // GRID
     namespace Grid {
@@ -218,6 +284,7 @@ namespace Sequencer {
     void updateSequencerDisplay(uint32_t playTick);
 
     // ------------------ INIT --------------------- //
+    void initTimingControls() ;
     void init(); // sets display and starts clock
 
     // Testpattern

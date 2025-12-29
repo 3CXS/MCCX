@@ -5,9 +5,128 @@
 
 namespace Sequencer {
 
-    // SEQ LENGTH
-    uint8_t seqLength = 8; // default
+    Sequence sequences[MAX_SEQUENCES];
 
+    uint8_t currentSequence = 0;
+    uint8_t currentTrack    = 0;
+
+    //--- PATTERN STORAGE --- //
+    static DMAMEM Event trackEventPool[MAX_PATTERN_SLOTS][MAX_EVENTS_PER_PATTERN];
+    static bool patternSlotUsed[MAX_PATTERN_SLOTS];
+
+    bool stepHasEvent[MAX_PATTERN_TICKS]; // true if any tick in the step has an event
+    bool stepNoteHasEvent[MAX_PATTERN_STEPS][NOTE_RANGE];  // absolute MIDI notes
+
+    int8_t allocPatternSlot() {
+        for (uint8_t i = 0; i < MAX_PATTERN_SLOTS; i++) {
+            if (!patternSlotUsed[i]) {
+                patternSlotUsed[i] = true;
+                memset(trackEventPool[i], 0,
+                    sizeof(trackEventPool[i]));
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    void freePatternSlot(int8_t slot) {
+        if (slot < 0 || slot >= MAX_PATTERN_SLOTS) return;
+        patternSlotUsed[slot] = false;
+    }
+
+    //--- TRACK --- //
+    const char* trackTypeToStr(uint8_t type) {
+        switch(type) {
+            case TRACK_SYNTH:   return "SYNTH";
+            case TRACK_SAMPLER: return "SAMP";
+            case TRACK_GRANULAR:return "GRAIN";
+            case TRACK_PERC:    return "PERCN";
+            default:            return "UNKNOWN";
+        }
+    }
+
+    void setTrackType(TrackType type) {
+        uint8_t t = getCurrentTrack();
+        if (t >= MAX_TRACKS) return;
+
+        Track &trk = curSeq().tracks[t];
+
+        // If same type, do nothing
+        if (trk.type == type) return;
+        trk.type = type;
+
+        // Optional: clear pattern when switching engine
+        //trk.pattern.clear();
+
+        AudioEngine::allNotesOff();
+        Display::writeStr("ttrack.txt", trackTypeToStr(type));
+    }
+
+    void assignTrackToEngine(uint8_t engineId) {
+        uint8_t t = getCurrentTrack();
+        if (t >= MAX_TRACKS) return;
+
+        Track &trk = curSeq().tracks[t];
+
+        trk.engineId = engineId;
+
+        //curSeq().tracks[track].engineId = engineId;
+        AudioEngine::allNotesOff();
+        Display::writeNum("engID.val", engineId + 1);
+    }
+
+    void setCurrentTrack(uint8_t t) {
+        if (t >= MAX_TRACKS) return;
+        currentTrack = t;
+        Track& tr = curTrack();
+
+        Display::writeNum("ntrack.val", currentTrack + 1);
+        Display::writeStr("ttrack.txt", trackTypeToStr(tr.type));
+        Display::writeNum("engID.val", tr.engineId + 1);
+
+        // Auto-create track if not active
+        if (!tr.active) {
+            initTrack(tr, currentTrack); // will allocate pattern slot
+        } else if (tr.pattern.events == nullptr) {
+            // Track active but no pattern allocated (possible after clear)
+            initPattern(tr);
+        }
+
+        // Update mute indicator
+        uint32_t color = tr.mute ? 65535 : 33808;  
+        Display::writeNum("mute.pco", color);
+
+        viewportRedrawPending = true;
+    }
+
+    uint8_t getCurrentTrack() {return currentTrack;}
+
+    bool trackHasPatternData(uint8_t trackIndex) {
+        if (trackIndex >= MAX_TRACKS) return false;
+        const auto &tr = curSeq().tracks[trackIndex];  // use curSeq() to access sequences
+        const auto &pat = tr.pattern;
+        if (pat.count > 0) return true;   // any events in this pattern
+        return false;  // empty track
+    }
+
+    void toggleTrackMute(uint8_t track) {
+        auto &tr = curSeq().tracks[track];
+        tr.mute = !tr.mute;
+
+        if (tr.mute) {
+            AudioEngine::muteTrack(track);
+        }
+        uint32_t color = tr.mute ? 65535 : 33808;
+        Display::writeNum("mute.pco", color);
+    }
+
+    bool isTrackMuted(uint8_t track) {
+        if (track >= MAX_TRACKS) return false;
+        return curSeq().tracks[track].mute;
+    }
+
+    // SEQ LENGTH
+    uint8_t seqLength = 4; // default
     void setSeqLength(uint8_t bars) {
         seqLength = constrain(bars, 1, MAX_SEQ_BARS);
         Display::writeNum("length.val", seqLength);
@@ -22,12 +141,12 @@ namespace Sequencer {
     // VIEW
     ViewPort view;
     uint8_t display_steps_per_bar = 0;
+    static uint8_t pianoStartNote = 48; // C2 default
     uint32_t getTicksPerColumn() {
         return (uint32_t)((TICKS_PER_BAR * view.barsOnDisplay) / DISPLAY_STEPS);
     }
     int16_t lastPhStep = -1;        
     uint16_t lastViewStartStep = 0;
-
     uint8_t lastCellState[DISPLAY_STEPS * MAX_NOTES_DISPLAY];
 
     // ZOOM
@@ -47,10 +166,8 @@ namespace Sequencer {
     static float bpm = 120.0f;
     static constexpr float BPM_MIN = 40.0f;
     static constexpr float BPM_MAX = 300.0f;
-    
     float getBPM() { return bpm; }
     float getStartNote() { return view.startNote; }
-
     void setBPM(float v) {
         bpm = constrain(v, BPM_MIN, BPM_MAX);
         uClock.setTempo(bpm);
@@ -78,48 +195,69 @@ namespace Sequencer {
 
     static constexpr uint8_t PREROLL_BEATS = 4;
     static constexpr uint32_t PREROLL_TICKS = PREROLL_BEATS * PPQN;
-    static uint8_t pianoStartNote = 48; // C2 default
-
-    enum class RecordMode {
-        NORMAL,   // Clears pattern and records fresh
-        OVERDUB,  // Adds notes to existing pattern
-        // FUTURE: PUNCH_IN
-    };
+    
+    enum class RecordMode {NORMAL, OVERDUB,};
     RecordMode currentRecordMode = RecordMode::NORMAL;
 
-
-    // PATTERN
-    Tick pattern[MAX_PATTERN_TICKS];
-    bool stepHasEvent[MAX_PATTERN_TICKS]; // true if any tick in the step has an event
-    bool stepNoteHasEvent[MAX_PATTERN_STEPS][NOTE_RANGE];  // absolute MIDI notes
-
-   // QUANTIZE
-    uint32_t quantizeTicks(QuantizeType q) {
-        switch(q) {
-            case QuantizeType::QUARTER:     return PPQN;         // 1 quarter = 96 ticks
-            case QuantizeType::SIXTEENTH:   return PPQN / 4;     // 1/16 = 24 ticks
-            case QuantizeType::THIRTYSECOND:return PPQN / 8;     // 1/32 = 12 ticks
-            case QuantizeType::OFF:
-            default: return 1;  // no quantization
+   // Time Division
+    uint32_t divisionToTicks(TimingDivision rate) {
+        switch(rate) {
+            case TimingDivision::QUARTER:       return PPQN;
+            case TimingDivision::EIGHTH:        return PPQN / 2;
+            case TimingDivision::SIXTEENTH:     return PPQN / 4;
+            case TimingDivision::SIXTEENTHT:    return PPQN / 6;
+            case TimingDivision::THIRTYSECOND:  return PPQN / 8;
+            case TimingDivision::THIRTYSECONDT: return PPQN / 12;
+            default:                            return PPQN / 4;
         }
     }
 
-    static QuantizeType quantizeMode = QuantizeType::OFF;
-    void setQuantizeMode(QuantizeType mode) {
-        quantizeMode = mode;
-        Display::writeStr("quant.txt", mode == QuantizeType::OFF ? "OFF" :
-                                        mode == QuantizeType::QUARTER ? "1/4" :
-                                        mode == QuantizeType::SIXTEENTH ? "1/16" : "1/32");
+    inline const char* divisionToLabel(TimingDivision rate) {
+        switch(rate) {
+            case TimingDivision::QUARTER:       return "1/4";
+            case TimingDivision::EIGHTH:        return "1/8";
+            case TimingDivision::SIXTEENTH:     return "1/16";
+            case TimingDivision::SIXTEENTHT:    return "1/16T";
+            case TimingDivision::THIRTYSECOND:  return "1/32";
+            case TimingDivision::THIRTYSECONDT: return "1/32T";
+            default:                            return "1/8";
+        }
     }
 
-    QuantizeType getQuantizeMode() {return quantizeMode;}
+    // QUANTIZE
+    static bool quantizeEnabled = false;
+    static TimingDivision quantizeDivision = TimingDivision::SIXTEENTH;
+
+    void setQuantizeEnabled(bool on) {
+        quantizeEnabled = on;
+        Display::writeStr("quant.txt", on ? divisionToLabel(quantizeDivision) : "OFF");
+    }
+
+    void setQuantizeDivision(TimingDivision rate) {
+        quantizeDivision = rate;
+        if (quantizeEnabled) {
+            Display::writeStr("quant.txt", divisionToLabel(rate));
+        }
+    }
+
+    bool isQuantizeEnabled() {
+        return quantizeEnabled;
+    }
+
+    uint32_t getQuantizeTicks() {
+        return quantizeEnabled ? divisionToTicks(quantizeDivision) : 1;
+    }
 
     // NOTE REPEAT
+    TimingDivision noteRepeatRate = TimingDivision::EIGHTH;
 
-    NoteRepeatRate noteRepeatRate = NoteRepeatRate::OFF;
+    void setRepeatDivision(TimingDivision div) {
+        noteRepeatRate = div;
+        Display::writeStr("rep.txt", divisionToLabel(div));
+    }
 
+    static constexpr uint8_t NOTE_REPEAT_GATE_PERCENT = 50;
     uint32_t noteRepeatLastTick = 0;
-
     bool noteRepeatActive       = false;
     uint8_t noteRepeatNote      = 0;
     uint32_t noteRepeatInterval = 0;
@@ -130,136 +268,105 @@ namespace Sequencer {
 
     NoteRepeatVoice repeatVoices[MAX_REPEAT_VOICES];
 
-    uint32_t getNoteRepeatIntervalTicks(NoteRepeatRate rate) {
-        switch(rate) {
-            case NoteRepeatRate::QUARTER:      return PPQN;
-            case NoteRepeatRate::EIGHTH:       return PPQN / 2;
-            case NoteRepeatRate::SIXTEENTH:    return PPQN / 4;
-            case NoteRepeatRate::SIXTEENTHT:   return PPQN / 6;
-            case NoteRepeatRate::THIRTYSECOND: return PPQN / 8;
-            case NoteRepeatRate::THIRTYSECONDT:return PPQN / 12;
-            case NoteRepeatRate::OFF:
-            default: return 0;
-        }
-    }
-
-    void updateNoteRepeatLabel(NoteRepeatRate rate) {
-        const char* txt = "OFF";
-        switch(rate) {
-            case NoteRepeatRate::QUARTER:      txt = "1/4"; break;
-            case NoteRepeatRate::EIGHTH:       txt = "1/8"; break;
-            case NoteRepeatRate::SIXTEENTH:    txt = "1/16"; break;
-            case NoteRepeatRate::SIXTEENTHT:   txt = "1/16T"; break;
-            case NoteRepeatRate::THIRTYSECOND: txt = "1/32"; break;
-            case NoteRepeatRate::THIRTYSECONDT:txt = "1/32T"; break;
-            default: txt = "OFF"; break;
-        }
-        Display::writeStr("nr.txt", txt);
-    }
-
     void startNoteRepeat(uint8_t note) {
-        if (noteRepeatRate == NoteRepeatRate::OFF)
-            return;
+        uint8_t curTrackId = Sequencer::getCurrentTrack(); // latch current track
 
-        // Find free voice
-        for (uint8_t i = 0; i < NUM_VOICES; i++) {
-            if (!repeatVoices[i].active) {
-                repeatVoices[i] = {
-                    .active   = true,
-                    .noteOn   = false,
-                    .note     = note,
-                    .nextTick = playheadTick,   // start immediately
-                    .offTick  = 0
-                };
+        Sequencer::noteRepeatActive = true;
+
+        for (uint8_t i = 0; i < Sequencer::MAX_REPEAT_VOICES; i++) {
+            auto &v = Sequencer::repeatVoices[i];
+            if (!v.active) {
+                v.active   = true;
+                v.noteOn   = false;
+                v.note     = note;
+                v.nextTick = Sequencer::playheadTick;
+                v.offTick  = 0;
+                v.trackId  = curTrackId;  // store the track
                 return;
             }
         }
     }
 
     void stopNoteRepeat(uint8_t note) {
-        for (uint8_t i = 0; i < NUM_VOICES; i++) {
-            auto &v = repeatVoices[i];
+        bool anyActive = false;
+
+        for (uint8_t i = 0; i < Sequencer::MAX_REPEAT_VOICES; i++) {
+            auto &v = Sequencer::repeatVoices[i];
             if (v.active && v.note == note) {
-
                 if (v.noteOn) {
-                    AudioEngine::noteOff(note);
-                    if (isRecording)
-                        recordNoteEvent(note, 0);
-                }
+                    AudioEngine::noteOff(v.trackId, v.note);
 
-                v.active = false;
-                v.noteOn = false;
-                return;
+                    if (Sequencer::isRecording) {
+                        // record the note-off to the correct track
+                        Sequencer::recordNoteEvent(v.trackId, v.note, 0);
+                    }
+                }
+                v.active  = false;
+                v.noteOn  = false;
             }
+            if (v.active) anyActive = true;
+        }
+
+        if (!anyActive) {
+            Sequencer::noteRepeatActive = false;
         }
     }
 
     void processNoteRepeat(uint32_t tick) {
-        uint32_t interval = getNoteRepeatIntervalTicks(noteRepeatRate);
+        if (!noteRepeatActive) return;
+
+        uint32_t interval = divisionToTicks(noteRepeatRate);
         if (interval == 0) return;
 
-        for (uint8_t i = 0; i < NUM_VOICES; i++) {
+        for (uint8_t i = 0; i < MAX_REPEAT_VOICES; i++) {
             auto &v = repeatVoices[i];
             if (!v.active) continue;
 
             // NOTE ON
             if (!v.noteOn && tick >= v.nextTick) {
-                AudioEngine::noteOn(v.note, getDefaultVelocity());
+                AudioEngine::noteOn(v.trackId, v.note, getDefaultVelocity());
                 v.noteOn = true;
 
+                // Set duration to ~80% of interval
                 uint32_t dur = interval * 8 / 10;
                 v.offTick = v.nextTick + dur;
                 v.nextTick += interval;
 
                 if (isRecording)
-                    recordNoteEvent(v.note, getDefaultVelocity());
+                    recordNoteEvent(v.trackId, v.note, getDefaultVelocity()); // track-aware
             }
 
             // NOTE OFF
             if (v.noteOn && tick >= v.offTick) {
-                AudioEngine::noteOff(v.note);
+                AudioEngine::noteOff(v.trackId, v.note);
                 v.noteOn = false;
 
                 if (isRecording)
-                    recordNoteEvent(v.note, 0);
+                    recordNoteEvent(v.trackId, v.note, 0); // track-aware
             }
         }
     }
 
     // ARPEGGIATOR
-
+    TimingDivision arpRate = TimingDivision::EIGHTH;
     uint8_t numHeldNotes = 0;
     ArpVoice arpVoice = { false, false, 0, 0, 0 };
     ArpMode arpMode = ArpMode::OFF;
-    ArpRate arpRate = ArpRate::SIXTEENTH;
     float arpGate = 0.8f;
-
-    uint32_t getArpIntervalTicks(ArpRate rate) {
-        switch(rate) {
-            case ArpRate::QUARTER:      return PPQN;
-            case ArpRate::EIGHTH:       return PPQN / 2;
-            case ArpRate::SIXTEENTH:    return PPQN / 4;
-            case ArpRate::SIXTEENTHT:   return PPQN / 6;
-            case ArpRate::THIRTYSECOND: return PPQN / 8;
-            case ArpRate::THIRTYSECONDT:return PPQN / 12;
-            default: return PPQN / 4;
-        }
-    }
 
     void recalcArpTiming() {
         // This function can precompute interval ticks if needed
-        // For now, we just call getArpIntervalTicks in processArp
     }
-
     static constexpr uint8_t MAX_ARP_VOICES = 1; // monophonic arp output
     uint8_t arpOctaves = 3;       // octave cycle range
 
-    void updateArpLabel(ArpMode mode) {
+    void setArpMode(ArpMode mode) {
+        arpMode = mode;
         const char* txt = "OFF";
         switch(mode) {
-            case ArpMode::UP_OCTAVE:      txt = "UP"; break;
-            case ArpMode::HELD_NOTES:     txt = "HOLD"; break;
-            default: txt = "OFF"; break;
+            case ArpMode::UP_OCTAVE:  txt = "UP"; break;
+            case ArpMode::HELD_NOTES: txt = "HLD"; break;
+            case ArpMode::OFF:         txt = "OFF"; break;
         }
         Display::writeStr("arp.txt", txt);
     }
@@ -274,7 +381,6 @@ namespace Sequencer {
         if (numHeldNotes < MAX_HELD_NOTES)
             heldNotes[numHeldNotes++] = note;
     }
-
     void removeHeldNote(uint8_t note) {
         for (uint8_t i = 0; i < numHeldNotes; i++) {
             if (heldNotes[i] == note) {
@@ -288,76 +394,167 @@ namespace Sequencer {
     }
 
     void startArp(uint8_t note) {
-        if (arpMode == ArpMode::OFF) return;
+        if (arpMode == ArpMode::OFF)
+            return;
+        uint8_t curTrackId = Sequencer::getCurrentTrack(); // latch current track
 
         addHeldNote(note);
 
-        arpVoice.active   = true;
-        arpVoice.noteOn   = false;
-        arpVoice.stepIndex= 0;
-        arpVoice.nextTick = playheadTick;  // start immediately
-        arpVoice.offTick  = 0;
+        if (arpVoice.active)
+            return;
+
+        arpVoice.active    = true;
+        arpVoice.noteOn    = false;
+        arpVoice.stepIndex = 0;
+        arpVoice.nextTick  = playheadTick;  // start immediately
+        arpVoice.offTick   = 0;
+        arpVoice.trackId  = curTrackId; 
     }
 
     void stopArp(uint8_t note) {
         removeHeldNote(note);
-        if (arpVoice.noteOn && arpVoice.active) {
-            AudioEngine::noteOff(arpVoice.note);
-            arpVoice.noteOn = false;
-            if (isRecording)
-                recordNoteEvent(arpVoice.note, 0);
+
+        // If the currently playing note is related to this released note, stop it
+        if (arpVoice.noteOn) {
+            bool stillValid = false;
+
+            for (uint8_t i = 0; i < numHeldNotes; i++) {
+                if (arpMode == ArpMode::UP_OCTAVE) {
+                    uint8_t base = heldNotes[0];
+                    for (uint8_t o = 0; o < arpOctaves; o++) {
+                        if (arpVoice.note == base + o * 12) {
+                            stillValid = true;
+                            break;
+                        }
+                    }
+                } else { // HELD_NOTES
+                    if (arpVoice.note == heldNotes[i]) {
+                        stillValid = true;
+                    }
+                }
+                if (stillValid) break;
+            }
+
+            if (!stillValid) {
+                AudioEngine::noteOff(arpVoice.trackId, arpVoice.note);
+                arpVoice.noteOn = false;
+
+                if (isRecording)
+                    recordNoteEvent(arpVoice.trackId, arpVoice.note, 0); // track-aware
+            }
         }
-        if (numHeldNotes == 0) arpVoice.active = false;
+    }
+
+    // --- Get next arp note based on mode ---
+    uint8_t getNextArpNote(uint8_t step) {
+        if (numHeldNotes == 0) return 0; // sanity
+
+        switch (arpMode) {
+            case ArpMode::UP_OCTAVE: {
+                uint8_t baseNote = heldNotes[0];
+                uint8_t octave    = step % arpOctaves;
+                return baseNote + octave * 12;
+            }
+            case ArpMode::HELD_NOTES:
+                return heldNotes[step % numHeldNotes];
+            default:
+                return 0;
+        }
     }
 
     void processArp(uint32_t tick) {
         if (!arpVoice.active || numHeldNotes == 0 || arpMode == ArpMode::OFF)
             return;
 
-        uint32_t interval = getArpIntervalTicks(arpRate);
+        uint32_t interval = divisionToTicks(arpRate);
         if (interval == 0) return;
+
+        // --- check currently playing note ---
+        if (arpVoice.noteOn) {
+            bool stillHeld = false;
+            for (uint8_t i = 0; i < numHeldNotes; i++) {
+                uint8_t expectedNote = (arpMode == ArpMode::UP_OCTAVE) ? getNextArpNote(arpVoice.stepIndex-1) 
+                                                                    : heldNotes[i];
+                if (arpVoice.note == expectedNote) {
+                    stillHeld = true;
+                    break;
+                }
+            }
+            if (!stillHeld) {
+                AudioEngine::noteOff(arpVoice.trackId, arpVoice.note);
+                arpVoice.noteOn = false;
+            }
+        }
 
         // --- NOTE ON ---
         if (!arpVoice.noteOn && tick >= arpVoice.nextTick) {
-
-            uint8_t noteToPlay = 0;
-            if (arpMode == ArpMode::UP_OCTAVE) {
-                uint8_t baseNote = heldNotes[0];
-                noteToPlay = baseNote + (arpVoice.stepIndex % arpOctaves) * 12;
-            } else { // HELD_NOTES
-                noteToPlay = heldNotes[arpVoice.stepIndex % numHeldNotes];
+            if (numHeldNotes == 0) {
+                arpVoice.active = false;
+                return;
             }
 
-            AudioEngine::noteOn(noteToPlay, getDefaultVelocity());
+            uint8_t noteToPlay = getNextArpNote(arpVoice.stepIndex);
+
+            AudioEngine::noteOn(arpVoice.trackId, noteToPlay, getDefaultVelocity());
             arpVoice.note = noteToPlay;
             arpVoice.noteOn = true;
 
-            // fix gate calculation: multiply only, no division by 100
             arpVoice.offTick = tick + (uint32_t)(interval * arpGate);
             arpVoice.nextTick = tick + interval;
             arpVoice.stepIndex++;
 
             if (isRecording)
-                recordNoteEvent(noteToPlay, getDefaultVelocity());
+                recordNoteEvent(arpVoice.trackId, noteToPlay, getDefaultVelocity());
         }
 
         // --- NOTE OFF ---
         if (arpVoice.noteOn && tick >= arpVoice.offTick) {
-            AudioEngine::noteOff(arpVoice.note);
+            AudioEngine::noteOff(arpVoice.trackId, arpVoice.note);
             arpVoice.noteOn = false;
 
             if (isRecording)
-                recordNoteEvent(arpVoice.note, 0);
+                recordNoteEvent(arpVoice.trackId, arpVoice.note, 0);
         }
     }
 
+    void onLoopWrap() {
+
+        // ---------- ARP ----------
+        if (arpVoice.active) {
+            if (arpVoice.noteOn) {
+                AudioEngine::noteOff(arpVoice.trackId, arpVoice.note);
+                if (isRecording)
+                    recordNoteEvent(arpVoice.trackId, arpVoice.note, 0);
+            }
+            arpVoice.noteOn   = false;
+            arpVoice.nextTick = 0;      // relative to playhead
+            arpVoice.offTick  = 0;
+        }
+
+        // ---------- NOTE REPEAT ----------
+        for (uint8_t i = 0; i < MAX_REPEAT_VOICES; i++) {
+            auto &v = repeatVoices[i];
+            if (!v.active) continue;
+
+            if (v.noteOn) {
+                AudioEngine::noteOff(arpVoice.trackId, v.note);
+                if (isRecording)
+                    recordNoteEvent(arpVoice.trackId, v.note, 0);
+            }
+
+            v.noteOn   = false;
+            v.nextTick = 0;
+            v.offTick  = 0;
+        }
+    }
+    
     // ----------------------------------------------------------------------------------//
     //                                      SEQUENCER                                    //
     // ----------------------------------------------------------------------------------//
 
     // ------------------ CLOCK ------------------
     void onTick(uint32_t tick) {
-        // PREROLL
+        // PREROLL handling
         if (transport == PREROLL) {
             AudioEngine::Metro(prerollTick);
             prerollTick++;
@@ -370,18 +567,29 @@ namespace Sequencer {
             }
             return;
         }
-
         if (!isPlaying) return;
 
         // NORMAL PLAY
         uint32_t patternTick = (tick - tickOffset) % getMaxTicks();
+        if (patternTick < playheadTick) {
+            onLoopWrap();
+        }
+
         playheadTick = patternTick;
 
-        Tick* t = &pattern[patternTick];
+        for (uint8_t tr = 0; tr < MAX_TRACKS; tr++) {
+            Track& track = curSeq().tracks[tr];
+            if (!track.active || track.mute) continue;
 
-        for (uint8_t i = 0; i < t->count; i++) {
-            AudioEngine::pushPending(t->events[i].note, t->events[i].vel);
+            // Sparse playback
+            for (uint8_t e = 0; e < track.pattern.count; e++) {
+                auto& ev = track.pattern.events[e];
+                if (ev.tick == patternTick) {  // only trigger events at this tick
+                    AudioEngine::pushPending(tr, ev.note, ev.value);
+                }
+            }
         }
+
         // NOTE REPEAT
         processNoteRepeat(playheadTick);
         processArp(playheadTick);
@@ -454,14 +662,12 @@ namespace Sequencer {
         Display::writeStr("rec.txt", isRecording? "REC":" ");
     }
 
-
-
     // ------------------ PATTERN ------------------
     void onRecord() {
         isRecording = true;
         playheadTick = 0;
         //allNotesOff();
-        clearPattern();
+        clearPattern(getCurrentTrack());
         transport = STOPPED;
         updateSequencerDisplay(playheadTick);
         Display::writeStr("rec.txt", "REC");
@@ -476,54 +682,36 @@ namespace Sequencer {
         Display::writeStr("rec.txt", "OVER");
     }
 
-    void startRecord(RecordMode mode) {
-        isRecording = true;
-        currentRecordMode = mode;
+    void recordNoteEvent(uint8_t trackId, uint8_t note, uint8_t vel) {
+        if (trackId >= MAX_TRACKS) return;
 
-        switch(mode) {
-            case RecordMode::NORMAL:
-                playheadTick = 0;
-                clearPattern();
-                // allNotesOff(); // optional if you want silence
-                Display::writeStr("rec.txt", "REC");
-                break;
-
-            case RecordMode::OVERDUB:
-                // Keep playheadTick as is to continue from current step
-                // Keep pattern intact
-                // allNotesOff(); // optional
-                Display::writeStr("rec.txt", "OVERDUB");
-                break;
-
-            default:
-                break;
-        }
-
-        transport = PLAYING; // You probably want playback while recording
-        updateSequencerDisplay(playheadTick);
-    }
-
-    void recordNoteEvent(uint8_t note, uint8_t vel) {
         uint32_t tick;
         ATOMIC(tick = playheadTick);
 
         // Quantize ONLY note-on
-        if (vel > 0 && quantizeMode != QuantizeType::OFF) {
-            uint32_t qTicks = quantizeTicks(quantizeMode);
+        if (vel > 0 && quantizeEnabled) {
+            uint32_t qTicks = divisionToTicks(quantizeDivision);
             tick = ((tick + qTicks / 2) / qTicks) * qTicks;
 
-            // Clamp to pattern end
             if (tick >= getMaxTicks())
                 tick = getMaxTicks() - 1;
         }
 
-        Tick &t = pattern[tick];
+        Track& track = curSeq().tracks[trackId];
 
-        if (t.count < NUM_VOICES) {
-            t.events[t.count++] = { note, vel };
+        // ----------------- CRITICAL GUARD -----------------
+        if (track.pattern.events == nullptr) {
+            initPattern(track); // ensure slot allocated
+            if (track.pattern.events == nullptr) return; // still no memory
         }
 
-        // Only mark steps for note-on
+        // prevent overflow
+        if (track.pattern.count >= track.pattern.maxEvents) return;
+
+        // add event
+        track.pattern.events[track.pattern.count++] =
+            makeEvent(tick, note, vel);
+
         if (vel > 0) {
             markStepEvent(tick, note, vel);
         }
@@ -531,15 +719,16 @@ namespace Sequencer {
         updateSequencerDisplay(playheadTick);
     }
 
-    void clearPattern() {
-        // Clear internal pattern data
-        for (uint32_t i = 0; i < getMaxTicks(); i++) {
-            pattern[i].count = 0;
-            for (uint8_t e = 0; e < NUM_VOICES; e++) {
-                pattern[i].events[e].note = 0;
-                pattern[i].events[e].vel  = 0;
-            }
+    void clearPattern(uint8_t track) {
+        Track& tr = curSeq().tracks[track];
+
+        // Release pattern slot if allocated
+        if (tr.pattern.slotIndex >= 0) {
+            freePatternSlot(tr.pattern.slotIndex);
         }
+        tr.pattern = {};  // reset struct safely
+        // Reset pattern event count
+        tr.pattern.count = 0;
 
         // Reset step events
         for (uint16_t i = 0; i < getTotalSteps(); i++) {
@@ -548,7 +737,7 @@ namespace Sequencer {
                 stepNoteHasEvent[i][n] = false;
         }
 
-        // Clear visible cells (only previously active)
+        // Clear visible cells
         for (uint8_t row = 0; row < MAX_NOTES_DISPLAY; row++) {
             for (uint8_t col = 0; col < Grid::stepsVisible; col++) {
                 uint16_t cellIndex = row * Grid::stepsVisible + col;
@@ -559,16 +748,13 @@ namespace Sequencer {
             }
         }
 
-        // Reset playhead
         lastPhStep = -1;
         lastViewStartStep = view.startStep;
         updatePlayhead(view.startStep);
     }
 
-
     void markStepEvent(uint32_t tick, uint8_t note, uint8_t vel) {
         if (vel == 0) return;
-
         uint32_t step = tick / TICKS_PER_STEP;
         if (step >= getTotalSteps()) return;
 
@@ -868,15 +1054,12 @@ namespace Sequencer {
     }
 
     // ------------------ GRID UPDATE ------------------
-    bool hasTrigInRange(uint8_t note,uint32_t startTick, uint32_t endTick){
-        for (uint32_t t = startTick; t < endTick && t < getMaxTicks(); t++) {
-            Tick &tick = pattern[t];
-            for (uint8_t e = 0; e < tick.count; e++) {
-                if (tick.events[e].note == note &&
-                    tick.events[e].vel > 0) {
-                    return true;  // NOTE-ON found
-                }
-            }
+    bool hasTrigInRange(uint8_t note, uint32_t startTick, uint32_t endTick) {
+        auto& pat = curTrack().pattern;
+        for (uint16_t i = 0; i < pat.count; i++) {
+            const auto& e = pat.events[i];
+            if (e.tick >= endTick) break;  // sorted -> done
+            if (e.tick >= startTick && e.note == note && e.value > 0) return true;
         }
         return false;
     }
@@ -949,68 +1132,179 @@ namespace Sequencer {
     //                                      INIT                                         //
     // ----------------------------------------------------------------------------------//
 
+    void initTimingControls() {
+        // Quantize OFF
+        setQuantizeEnabled(false);
+        setQuantizeDivision(TimingDivision::SIXTEENTH); // safe default
+        // Note Repeat 1/16
+        setRepeatDivision(TimingDivision::SIXTEENTH);
+        // Arpeggiator OFF
+        setArpMode(ArpMode::OFF);
+    }
+
+    void initTrack(Track& tr, uint8_t trackIndex) {
+        tr.active   = true;
+        tr.mute     = false;
+        tr.type     = TRACK_SYNTH;
+        tr.engineId = trackIndex % MAX_ENGINES; 
+        tr.midiCh   = 1;
+
+        // Allocate a pattern slot for this track
+        initPattern(tr);
+    }
+
+    void initPattern(Track& tr) {
+        if (tr.pattern.slotIndex >= 0)
+            return;
+
+        int8_t slot = allocPatternSlot();
+        if (slot < 0) {
+            tr.pattern = {};
+            return;
+        }
+
+        tr.pattern.slotIndex = slot;
+        tr.pattern.events    = trackEventPool[slot];
+        tr.pattern.count     = 0;
+        tr.pattern.maxEvents = MAX_EVENTS_PER_PATTERN;
+    }
+
     void init() {
+        // Init sequence 0
+        Sequence& seq = sequences[0];
+        seq.lengthBars = seqLength;
+        seq.bpm        = bpm;
+        
+        memset(trackEventPool, 0, sizeof(trackEventPool));
+        memset(patternSlotUsed, 0, sizeof(patternSlotUsed));
+        // Initialize all tracks in the sequence
+        for (uint8_t t = 0; t < MAX_TRACKS; t++) {
+            initTrack(curSeq().tracks[t], 0);
+        }
+        setCurrentTrack(0);
+        // Display & playhead
         initGridXSTR();
         initPlayheadCmds(Grid::stepsVisible, GRID_Y, GRID_H);
         playheadTick = 0;
         lastPhStep = -1;
         viewportRedrawPending = true;
-        // CLOCK 
+
+        // CLOCK setup
         uClock.setOutputPPQN(uClock.PPQN_96); 
         uClock.setOnOutputPPQN(onTick);
-        uClock.setOnStep(onStep);          // for 16th-step display updates
+        uClock.setOnStep(onStep);
         uClock.setOnClockContinue(handleClockContinue);
-        uClock.setTempo(120);
+        uClock.setTempo(bpm);
         uClock.init();
     }
 
     // --------------- TEST PATTERN --------------
-    void testPatternGumball(float noteLengthFraction = 0.95f) {
 
-        clearPattern();
+    void testPatternGumball(float noteLengthFraction = 0.75f) {
 
-        const uint32_t stepLen = TICKS_PER_STEP;
-        const uint32_t noteDur = stepLen * 2 * noteLengthFraction; // 8th notes
+        const uint32_t stepTicks = TICKS_PER_STEP;
+        const uint32_t leadDur   = stepTicks * noteLengthFraction;
+        const uint32_t bassDur   = stepTicks * 6 * noteLengthFraction; // dotted-ish bass
 
-        // -------- Melody (8 steps per bar) --------
-        const uint8_t melody[] = {
-            67, 69, 71, 69, 67, 69, 71, 74,
-            71, 69, 67, 69, 71, 74, 71, 69
+        const uint8_t leadVel = getDefaultVelocity();
+        const uint8_t bassVel = getDefaultVelocity() / 2;
+
+        const uint8_t totalBars = 4;
+        const uint32_t maxTicks = getMaxTicks();
+
+        // ---------- TRACK SETUP ----------
+        Track& lead = curSeq().tracks[0];
+        Track& bass = curSeq().tracks[1];
+
+        initTrack(lead, 0);
+        initTrack(bass, 1);
+
+        lead.mute = false;
+        bass.mute = false;
+
+        clearPattern(0);
+        clearPattern(1);
+
+        // IMPORTANT: clearPattern frees memory
+        initPattern(lead);
+        initPattern(bass);
+
+        // ---------- LEAD (Hybris-style pulse riff) ----------
+        // D minor scale, tight repeating motif
+        // D  F  G  A  C  A  G  F
+        const uint8_t leadNotes[8] = {
+            74, 77, 79, 81,
+            84, 81, 79, 77
         };
 
-        // -------- Bass --------
-        const uint8_t bass[] = {
-            43, 50, 43, 50,  // G2 D3
-            40, 47, 40, 47,  // E2 B2
-            48, 43, 48, 43,  // C3 G2
-            50, 45, 50, 45   // D3 A2
-        };
+        for (uint8_t bar = 0; bar < totalBars; bar++) {
+            for (uint8_t step = 0; step < 16; step++) {
 
-        const uint32_t totalSteps = 16 * 8; // 8 bars
+                // Leave small gaps for groove
+                if (step % 4 == 3) continue;
 
-        for (uint32_t step = 0; step < totalSteps; step += 2) {
-            uint32_t tickOn = step * stepLen;
-            if (tickOn >= getMaxTicks()) break;
+                uint32_t globalStep = bar * STEPS_PER_BAR + step;
+                uint32_t tickOn  = globalStep * stepTicks;
+                uint32_t tickOff = tickOn + leadDur;
 
-            uint8_t m = melody[(step / 2) % 16];
-            uint8_t b = bass[(step / 2) % 16];
+                if (tickOn >= maxTicks) continue;
 
-            // NOTE ON
-            Tick &tOn = pattern[tickOn];
-            if (tOn.count < NUM_VOICES)
-                tOn.events[tOn.count++] = { m, defaultVelocity };
-            if (tOn.count < NUM_VOICES)
-                tOn.events[tOn.count++] = { b, (uint8_t)(defaultVelocity * 0.6f) };
+                uint8_t note = leadNotes[(step + bar * 2) % 8];
 
-            // NOTE OFF
-            uint32_t tickOff = tickOn + noteDur;
-            if (tickOff < getMaxTicks()) {
-                Tick &tOff = pattern[tickOff];
-                if (tOff.count < NUM_VOICES) tOff.events[tOff.count++] = { m, 0 };
-                if (tOff.count < NUM_VOICES) tOff.events[tOff.count++] = { b, 0 };
+                // NOTE ON
+                lead.pattern.events[lead.pattern.count++] =
+                    makeEvent(tickOn, note, leadVel);
+                markStepEvent(tickOn, note, leadVel);
+
+                // NOTE OFF
+                if (tickOff < maxTicks) {
+                    lead.pattern.events[lead.pattern.count++] =
+                        makeEvent(tickOff, note, 0);
+                }
             }
         }
+
+        // ---------- BASS (classic Amiga pulse) ----------
+        // Root + octave movement
+        const uint8_t bassRoot = 38; // D2
+
+        for (uint8_t bar = 0; bar < totalBars; bar++) {
+
+            // Beat 1: root
+            uint32_t step1 = bar * STEPS_PER_BAR;
+            uint32_t tick1 = step1 * stepTicks;
+
+            // Beat 3: octave
+            uint32_t step2 = step1 + 8;
+            uint32_t tick2 = step2 * stepTicks;
+
+            if (tick1 < maxTicks) {
+                bass.pattern.events[bass.pattern.count++] =
+                    makeEvent(tick1, bassRoot, bassVel);
+                markStepEvent(tick1, bassRoot, bassVel);
+
+                uint32_t off = tick1 + bassDur;
+                if (off < maxTicks)
+                    bass.pattern.events[bass.pattern.count++] =
+                        makeEvent(off, bassRoot, 0);
+            }
+
+            if (tick2 < maxTicks) {
+                bass.pattern.events[bass.pattern.count++] =
+                    makeEvent(tick2, bassRoot + 12, bassVel);
+                markStepEvent(tick2, bassRoot + 12, bassVel);
+
+                uint32_t off = tick2 + bassDur;
+                if (off < maxTicks)
+                    bass.pattern.events[bass.pattern.count++] =
+                        makeEvent(off, bassRoot + 12, 0);
+            }
+        }
+
+        viewportRedrawPending = true;
     }
+
+
 
 
 

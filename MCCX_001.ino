@@ -47,7 +47,7 @@
       Board1  (default)   0x2E  46
       Board2  A0 (+1)     0x2F  47
 
-    ENCODER BOARDS
+    ENCODER BOARDS ADRESS
       Board1  (default)   0x49  73
       Board2  A0 (+1)     0x4A  74
 
@@ -67,7 +67,7 @@
   --------------------------------------------------------------------------------
     TRACK TYPE:
       Sampler 
-      Synth - PULSE / WAVETABLE
+      Synth - PULSE / WAVETABLE / FM
       Granular - Monophonic 8bit Samples
       Perc&Noise - Drum Synthesis / Drone
       Midi - Note/Vel CC NRPN SYSEX
@@ -142,12 +142,15 @@
         Sequencer::initView(2);
         Display::writeNum("bpm.val", Sequencer::getBPM()); 
         Display::writeNum("length.val", Sequencer::getSeqLength());
-
-        Sequencer::testPatternGumball(0.95f);
-        //Sequencer::updateSequencerDisplay(0);
+        Sequencer::initTimingControls();
+        Sequencer::testPatternGumball(0.75f);
+        Sequencer::setCurrentTrack(0);
+        Sequencer::updateSequencerDisplay(0);
+        
     }
 
     // ---LOOP---
+
     void loop() {
 
       AudioEngine::processAudio();

@@ -1,26 +1,21 @@
 #include "AudioEngine.h"
+#include "Sequencer.h"
 
 namespace AudioEngine {
+    
+    Voice       voices[NUM_VOICES];
+    SynthEngine engines[MAX_ENGINES];
 
     // ------------------ AUDIO OBJECTS ------------------
 
-    AudioMixer4             mixV1, mixV2, mixMetro, mixMain;
+    AudioMixer4             mixMain;
+    AudioMixer4             mixMetro;
+
     AudioOutputI2S          i2s1;
     AudioControlSGTL5000    sgtl5000_1;
 
-    // SYNNTH
-
-    AudioSynthWaveform      oscA[NUM_VOICES];
-    AudioSynthWaveform      oscB[NUM_VOICES];
-    AudioMixer4             oscMix[NUM_VOICES];
-
-    AudioConnection*        patchCords[NUM_VOICES * 6];
-    AudioConnection         patchV1(mixV1, 0, mixMain, 0);          // MAIN CH 1  
-    AudioConnection         patchV2(mixV2, 0, mixMain, 1);          // MAIN CH 2
-
-    AudioEffectBitcrusher   crusher[NUM_VOICES];
-    AudioFilterStateVariable filter[NUM_VOICES];
-    AudioEffectEnvelope     env[NUM_VOICES];
+    // SYNTH ENGINE
+    AudioConnection* patchCords[NUM_VOICES * 4 + 4];
 
     // METRO
     AudioSynthWaveform      metroOsc;
@@ -33,131 +28,192 @@ namespace AudioEngine {
     AudioConnection         patchMainL(mixMain, 0, i2s1, 0);
     AudioConnection         patchMainR(mixMain, 0, i2s1, 1);   
 
-    uint8_t voiceNote[NUM_VOICES];
-
-    void setSynthParam(SynthParam param, float value) {
-        for (int i = 0; i < NUM_VOICES; i++) {
-            switch (param) {
-
-                case SynthParam::FILTER_CUTOFF:
-                    filter[i].frequency(value);
-                    break;
-
-                case SynthParam::FILTER_RESONANCE:
-                    filter[i].resonance(value);
-                    break;
-
-                case SynthParam::BITCRUSH_BITS:
-                    crusher[i].bits((int)value);
-                    break;
-
-                case SynthParam::OSC1_PULSE: {
-                    static const float dutyTable[] = {
-                        0.125f, 0.25f, 0.5f, 0.75f
-                    };
-                    int idx = constrain((int)value, 0, 3);
-                    oscA[i].pulseWidth(dutyTable[idx]);
-                    break;
-                }
-
-                case SynthParam::ENV_ATT:
-                    env[i].attack(value);
-                    break;
-                case SynthParam::ENV_DEC:
-                    env[i].decay(value);
-                    break;
-                case SynthParam::ENV_SUS:
-                    env[i].sustain(value);
-                    break;
-                case SynthParam::ENV_REL:
-                    env[i].release(value);
-                    break;
-                    
-                default:
-                    break;
-
+    // ------------------ PARAMETERS  ------------------
+    void setMainParam(EncParam param, float value) {
+        switch (param) {
+            case EncParam::MAIN_VOL: {
+                mixMain.gain(0, value);
+                mixMain.gain(1, value);
+                break;
             }
+            default:
+                break;
+        }
+    }
+
+    void setSynthParam(EncParam param, float value) {
+        switch (param) {
+
+            case EncParam::FILTER_CUTOFF:
+                engines[0].filter.frequency(value);
+                break;
+
+            case EncParam::FILTER_RESONANCE:
+                engines[0].filter.resonance(value);
+                break;
+
+            case EncParam::BITCRUSH_BITS:
+                engines[0].crusher.bits((int)value);
+                break;
+
+            case EncParam::OSC1_PULSE: {
+                static const float dutyTable[] = {
+                    0.125f, 0.25f, 0.5f, 0.75f
+                };
+                int idx = constrain((int)value, 0, 3);
+                for (int i = 0; i < NUM_VOICES; i++) {
+                    voices[i].oscA.pulseWidth(dutyTable[idx]);
+                    voices[i].oscB.pulseWidth(dutyTable[idx]);
+                }
+                break;
+            }
+
+            case EncParam::ENV_ATT:
+                for (int i = 0; i < NUM_VOICES; i++)
+                    voices[i].env.attack(value);
+                break;
+
+            case EncParam::ENV_DEC:
+                for (int i = 0; i < NUM_VOICES; i++)
+                    voices[i].env.decay(value);
+                break;
+
+            case EncParam::ENV_SUS:
+                for (int i = 0; i < NUM_VOICES; i++)
+                    voices[i].env.sustain(value);
+                break;
+
+            case EncParam::ENV_REL:
+                for (int i = 0; i < NUM_VOICES; i++)
+                    voices[i].env.release(value);
+                break;
+            
+            default:
+                break;
+
         }
     }
 
     // ------------------ PENDING BUFFER ------------------
-    volatile uint8_t pend_note[64], pend_vel[64], pend_w=0, pend_r=0;
+    volatile uint8_t pend_note[64];
+    volatile uint8_t pend_vel[64];
+    volatile uint8_t pend_track[64];
 
-    bool popPending(uint8_t &note,uint8_t &vel) {
-        noInterrupts(); 
-        if(pend_r==pend_w) {
-            interrupts(); 
+    volatile uint8_t pend_w = 0;
+    volatile uint8_t pend_r = 0;
+
+    void pushPending(uint8_t trackId, uint8_t note, uint8_t vel) {
+        uint8_t next = (pend_w + 1) & PEND_MASK;
+        if (next == pend_r) return; // buffer full
+
+        pend_track[pend_w] = trackId;
+        pend_note[pend_w]  = note;
+        pend_vel[pend_w]   = vel;
+        pend_w = next;
+    }
+
+    bool popPending(uint8_t &trackId, uint8_t &note, uint8_t &vel) {
+        noInterrupts();
+        if (pend_r == pend_w) {
+            interrupts();
             return false;
-            } 
-        note=pend_note[pend_r]; 
-        vel=pend_vel[pend_r]; 
-        pend_r=(pend_r+1)&PEND_MASK; 
-        interrupts(); 
+        }
+
+        trackId = pend_track[pend_r];
+        note    = pend_note[pend_r];
+        vel     = pend_vel[pend_r];
+        pend_r  = (pend_r + 1) & PEND_MASK;
+
+        interrupts();
         return true;
     }
 
-    void pushPending(uint8_t note,uint8_t vel) {
-        uint8_t next=(pend_w+1)&PEND_MASK; 
-        if(next==pend_r) return; 
-        pend_note[pend_w]=note; 
-        pend_vel[pend_w]=vel; 
-        pend_w=next;
-    }
-
-    // Execute pending note events in main loop context
     void processAudio() {
-        uint8_t n, v;
-        while (popPending(n, v)) {
-            if (v > 0) AudioEngine::noteOn(n, v);  // note-on
-            else       AudioEngine::noteOff(n);    // note-off
+        uint8_t trackId, note, vel;
+
+        while (popPending(trackId, note, vel)) {
+            if (vel > 0)
+                noteOn(trackId, note, vel);
+            else
+                noteOff(trackId, note);
         }
     }
 
     // ------------------ VOICE MANAGEMENT ------------------
+    int8_t trackVoiceMap[MAX_TRACKS][128];
 
-    float midiToFreq(uint8_t note) {
-        return 440.0f*pow(2.0f,(note-69)/12.0f);
+    void initTrackVoiceMap() {
+        for (int t = 0; t < MAX_TRACKS; t++)
+            for (int n = 0; n < 128; n++)
+                trackVoiceMap[t][n] = -1;
     }
+
+    float midiToFreq(uint8_t note) {return 440.0f * pow(2.0f, float(note - 69) / 12.0f);}
 
     int findFreeVoice() {
-        for(int i=0;i<NUM_VOICES;i++) { 
-            if(!env[i].isActive()) return i;
-        } 
-        return 0;
+        for (int i = 0; i < NUM_VOICES; i++) {
+            if (!voices[i].env.isActive())
+                return i;
+        }
+        return 0; // simple voice steal
     }
 
-    void noteOn(uint8_t note, uint8_t vel) {
+
+    void noteOn(uint8_t trackId, uint8_t note, uint8_t vel) {
+
+        if (trackId >= MAX_TRACKS) return;
+
         int v = findFreeVoice();
+        Voice& voice = voices[v];
+
+        voice.note   = note;
+        voice.active = true;
+        voice.trackId  = trackId;
+
         float f = midiToFreq(note);
+        float amp = vel / 127.0f;
+        voice.oscA.frequency(f);
+        voice.oscB.frequency(f * 2.0f);   // octave up (or detune later)
+        voice.oscA.amplitude(amp);
+        voice.oscB.amplitude(amp);
 
-        oscA[v].frequency(f);
-        oscB[v].frequency(f * 2.0f); // slight detune (or *2 for octave)
-
-        oscA[v].amplitude(1.0);
-        oscB[v].amplitude(1.0);
-
-        env[v].noteOn();
-        voiceNote[v] = note;
+        voice.env.noteOn();
+        trackVoiceMap[trackId][note] = v;
     }
 
-    void noteOff(uint8_t note) { 
-        for(int i=0;i<NUM_VOICES;i++){ 
-            if(voiceNote[i]==note){ 
-                env[i].noteOff(); 
-                voiceNote[i]=255;
-            }
+    void noteOff(uint8_t trackId, uint8_t note)
+    {
+        if (trackId >= MAX_TRACKS) return;
+
+        int v = trackVoiceMap[trackId][note];
+        if (v >= 0) {
+            Voice& voice = voices[v];
+            voice.env.noteOff();
+            voice.note   = 255;
+            voice.active = false;
+
+            trackVoiceMap[trackId][note] = -1;
         }
     }
 
-    void allNotesOff() { 
-        metroEnv.noteOff(); 
-        for(int i=0;i<NUM_VOICES;i++){ 
-            env[i].noteOff(); 
-            voiceNote[i]=255;
-        } 
-        noInterrupts(); 
-        pend_w=pend_r=0; 
-        interrupts(); 
+    void muteTrack(uint8_t trackId)
+    {
+        if (trackId >= MAX_TRACKS) return;
+
+        for (int note = 0; note < 128; note++) {
+            noteOff(trackId, note);
+        }
+    }
+
+    void allNotesOff() {
+        metroEnv.noteOff();
+        for (int t = 0; t < MAX_TRACKS; t++)
+            muteTrack(t);
+
+        // Clear pending buffer
+        noInterrupts();
+        pend_w = pend_r = 0;
+        interrupts();
     }
 
     // ------------------ METRO ------------------
@@ -181,15 +237,21 @@ namespace AudioEngine {
     // ------------------ INITIALIZATION ------------------
 
     void init() {
-        // BOARD 
-        AudioMemory(60);
-        sgtl5000_1.enable();
-        sgtl5000_1.volume(0.5);
 
-        // METRO 
+        // ------------------ AUDIO MEMORY & BOARD ------------------
+        AudioMemory(60);                     // allocate enough blocks
+        sgtl5000_1.enable();                // enable codec
+        sgtl5000_1.volume(0.5f);            // default volume
+
+        // ------------------ MAIN MIXER ------------------
+        mixMain.gain(0, 0.2f);              // synth
+        mixMain.gain(1, 0.4f);              // metro or other
+        mixMain.gain(2, 0.0f);              // reserved
+
+        // ------------------ METRO ------------------
         metroOsc.begin(WAVEFORM_SQUARE);
         metroOsc.frequency(2000);
-        metroOsc.amplitude(0.8);
+        metroOsc.amplitude(0.8f);
 
         metroEnv.attack(0);
         metroEnv.hold(1);
@@ -199,58 +261,59 @@ namespace AudioEngine {
 
         mixMetro.gain(0, 1.0f);
 
-        //  SYNTH VOICES 
-        int pc = 0, m1 = 0, m2 = 0;
+        // Patch metro chain
+        patchCords[0] = new AudioConnection(metroOsc, metroEnv);
+        patchCords[1] = new AudioConnection(metroEnv, 0, mixMetro, 0);
+        patchCords[2] = new AudioConnection(mixMetro, 0, mixMain, 1);
+
+        // ------------------ SYNTH ENGINE ------------------
+        // Engine FX: one filter + one bitcrusher
+        engines[0].crusher.bits(24);
+        engines[0].crusher.sampleRate(16000);
+        engines[0].filter.frequency(3000);
+        engines[0].filter.resonance(0.1f);
+
+        // ------------------ SYNTH VOICES ------------------
+        int pc = 3;  // next free patchCords index
         for (int i = 0; i < NUM_VOICES; i++) {
 
-            oscA[i].begin(WAVEFORM_PULSE);
-            oscA[i].pulseWidth(0.5);  
+            Voice& voice = voices[i];
+            voice.note = 255;
+            voice.active = false;
+            voice.engineId = 0;
 
-            oscB[i].begin(WAVEFORM_PULSE);
-            oscB[i].pulseWidth(0.7);  
+            // Oscillators
+            voice.oscA.begin(WAVEFORM_PULSE);
+            voice.oscA.pulseWidth(0.5f);
+            voice.oscB.begin(WAVEFORM_PULSE);
+            voice.oscB.pulseWidth(0.7f);
 
-            oscMix[i].gain(0, 0.5);
-            oscMix[i].gain(1, 0.5);
+            // Envelope
+            voice.env.attack(0);
+            voice.env.decay(10);
+            voice.env.sustain(0.5);
+            voice.env.release(20);
 
-            crusher[i].bits(24);        // try 6–8
-            crusher[i].sampleRate(16000); // or 8000 for dirt
+            // OscMix for this voice
+            voice.oscMix.gain(0, 0.5);
+            voice.oscMix.gain(1, 0.5);
 
-            filter[i].frequency(3000);
-            filter[i].resonance(0.1);
-
-            env[i].attack(0);
-            env[i].hold(0);
-            env[i].decay(10);
-            env[i].sustain(5);
-            env[i].release(20);
-
-            // oscA -> oscMix
-            patchCords[pc++] = new AudioConnection(oscA[i], 0, oscMix[i], 0);
-            // oscB -> oscMix
-            patchCords[pc++] = new AudioConnection(oscB[i], 0, oscMix[i], 1);
-
-            // oscMix -> bitcrusher
-            patchCords[pc++] = new AudioConnection(oscMix[i], 0, crusher[i], 0);
-
-            // bitcrusher -> filter
-            patchCords[pc++] = new AudioConnection(crusher[i], 0, filter[i], 0);
-
-            // filter LP -> envelope
-            patchCords[pc++] = new AudioConnection(filter[i], 0, env[i], 0);
-
-            // envelope -> voice mixer
-            patchCords[pc++] = new AudioConnection(env[i], 0,
-                (i < 4 ? mixV1 : mixV2),
-                (i < 4 ? m1++ : m2++)
-            );
-
+            // ------------------ PATCHING VOICE ------------------
+            patchCords[pc++] = new AudioConnection(voice.oscA, 0, voice.oscMix, 0);
+            patchCords[pc++] = new AudioConnection(voice.oscB, 0, voice.oscMix, 1);
+            patchCords[pc++] = new AudioConnection(voice.oscMix, 0, voice.env, 0);
+            patchCords[pc++] = new AudioConnection(voice.env, 0, engines[0].mix, i % 4);
         }
 
-        //  MIXER GAINS 
-        mixMain.gain(0, 0.5);           // synth mix1
-        mixMain.gain(1, 0.5);           // synth mix2
-        mixMain.gain(2, 0.8);           // metro
+        // Engine FX → main mix
+        patchCords[pc++] = new AudioConnection(engines[0].mix, 0, engines[0].crusher, 0);
+        patchCords[pc++] = new AudioConnection(engines[0].crusher, 0, engines[0].filter, 0);
+        patchCords[pc++] = new AudioConnection(engines[0].filter, 0, mixMain, 0);
 
-    } 
+        // ------------------ OUTPUT ------------------
+        patchMainL = AudioConnection(mixMain, 0, i2s1, 0);
+        patchMainR = AudioConnection(mixMain, 0, i2s1, 1);
+    }
+
 
 } // namespace AudioEngine

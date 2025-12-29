@@ -29,6 +29,10 @@ namespace Input {
     extern bool shiftActive;
     extern bool f1Active;
     extern bool f2Active;
+    extern bool f3Active;
+    extern bool f4Active;
+    extern bool f5Active;
+    extern bool f6Active;
 
     void onPlayFromStart();
     void onPlayPause();
@@ -65,9 +69,12 @@ namespace Input {
     void readPads();
     TrellisCallback keyPress();
     void processTrellisLEDs();
+    void clearAllTrackLEDs();
+    void updateTrackLEDs();
 
     // ---------------- PROCESS  ----------------
     void processInputEvents();
+    
     // ---------------- INIT  ----------------
     void init();
 

@@ -2,7 +2,7 @@
 
 static constexpr uint8_t NUM_VOICES = 4;
 
-    enum class SynthParam {
+    enum class EncParam {
         OSC1_PULSE,
         OSC2_DETUNE,
         FILTER_CUTOFF,
@@ -17,5 +17,9 @@ static constexpr uint8_t NUM_VOICES = 4;
         ARP_OCTAVES,
         ARP_MODE,
         ARP_GATE,
+        MAIN_VOL,
+        MAIN_2,
+        MAIN_3,
+        MAIN_4,
     };
 
