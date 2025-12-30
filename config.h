@@ -1,5 +1,6 @@
 #pragma once
 
+#define MAX_TRACKS 32
 static constexpr uint8_t NUM_VOICES = 4;
 
     enum class EncParam {

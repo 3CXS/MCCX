@@ -630,8 +630,9 @@ namespace Input {
             return;
         }
         // F1 ENCODER PAGE
-        if (f1Active && key >= 4 && key < 8) {
+        if (f1Active && key >= 4 && key < 8 && pressed) {
             Input::setEncoderPage(key - 4);
+            return;
         }
         // F1 TIME DIVISIONS
         if (f1Active && key >= 8 && key < 14 && pressed) {
@@ -658,7 +659,7 @@ namespace Input {
         // F1 ENGINE ID
         if (f1Active && key >= 20 && key < 24 && pressed) {
             if (!pressed) return;
-            Sequencer::assignTrackToEngine(key-20);
+            //Sequencer::assignTrackToEngine(key-20);
             return;
         }
         // ---------- Normal pad behavior ----------
@@ -677,8 +678,10 @@ namespace Input {
         }
 
         // normal note-on/off
-        if (pressed) AudioEngine::noteOn(trk,note, Sequencer::getDefaultVelocity());
-        else         AudioEngine::noteOff(trk, note);
+        if (pressed)
+            AudioEngine::pushPending(trk, note, Sequencer::getDefaultVelocity());
+        else
+            AudioEngine::pushPending(trk, note, 0);
 
         if (Sequencer::isRecording)
             Sequencer::recordNoteEvent(trk, note, pressed ? Sequencer::getDefaultVelocity() : 0);

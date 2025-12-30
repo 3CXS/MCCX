@@ -132,6 +132,9 @@
         delay(200);
         Display::writeStr("load.txt", "XXXX");
 
+        //SD.begin(AudioEngine::SDCARD_CS_PIN);
+        AudioEngine::loadAndAssignPad("Kick_V.raw", 1);
+
         delay(200);
         Display::writeStr("load.txt", "XXXXX");
         Serial.println("ALL INITIALIZED");
@@ -143,8 +146,14 @@
         Display::writeNum("bpm.val", Sequencer::getBPM()); 
         Display::writeNum("length.val", Sequencer::getSeqLength());
         Sequencer::initTimingControls();
-        Sequencer::testPatternGumball(0.75f);
+        Sequencer::curSeq().tracks[0].active = true;  // for example, first track
+        Sequencer::curSeq().tracks[0].type   = Sequencer::TrackType::SAMPLER;
+        //Sequencer::testPatternGumball(0.75f);
         Sequencer::setCurrentTrack(0);
+        delay(1000);
+        AudioEngine::samplerNoteOn(0, 1, 127);
+        delay(1000);
+        AudioEngine::samplerNoteOn(0, 1, 127);
         Sequencer::updateSequencerDisplay(0);
         
     }

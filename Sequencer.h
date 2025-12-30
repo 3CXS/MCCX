@@ -11,7 +11,7 @@ namespace Sequencer {
 
     // ------------------ CONFIG ------------------ //
     #define MAX_SEQ_BARS 32
-    #define MAX_TRACKS 32
+
     #define MAX_SEQUENCES 32
     #define MAX_PATTERN_SLOTS 16
 
@@ -32,6 +32,7 @@ namespace Sequencer {
     #define X_OFFSET              144
 
     // ------------------ DATA STRUCTURE--------------------- //
+    constexpr uint16_t MAX_EVENTS_PER_PATTERN = 1024;
     enum class EventType { NOTE_ON, NOTE_OFF, CC };
 
     struct Event {
@@ -40,7 +41,7 @@ namespace Sequencer {
         uint8_t note;        // or CC id
         uint8_t value;       // velocity or CC value
     };
-    constexpr uint16_t MAX_EVENTS_PER_PATTERN = 1024;
+
     struct PatternSlot {
         Event events[MAX_EVENTS_PER_PATTERN];
         bool used;
@@ -63,7 +64,6 @@ namespace Sequencer {
         bool active = false;
         bool mute   = false;
         uint8_t type = 0;
-        uint8_t engineId = 0;
         uint8_t midiCh = 1;
 
         Pattern pattern;  // pattern with sparse events
@@ -76,10 +76,10 @@ namespace Sequencer {
     };
 
     enum TrackType {
-        TRACK_SYNTH = 0,
-        TRACK_SAMPLER = 1,
-        TRACK_GRANULAR = 2,
-        TRACK_PERC = 3
+        SYNTH = 0,
+        SAMPLER = 1,
+        //GRANULAR = 2,
+        //PERC = 3
     };
 
     // ------------------ FUNCTIONS --------------------- //
@@ -99,7 +99,6 @@ namespace Sequencer {
     void setCurrentTrack(uint8_t t);
     uint8_t getCurrentTrack();
     void setTrackType(TrackType type);
-    void assignTrackToEngine(uint8_t engineId);
     void toggleTrackMute(uint8_t track);
     extern bool isTrackMuted(uint8_t track);
     void initTrack(Track& tr, uint8_t index);

@@ -37,10 +37,10 @@ namespace Sequencer {
     //--- TRACK --- //
     const char* trackTypeToStr(uint8_t type) {
         switch(type) {
-            case TRACK_SYNTH:   return "SYNTH";
-            case TRACK_SAMPLER: return "SAMP";
-            case TRACK_GRANULAR:return "GRAIN";
-            case TRACK_PERC:    return "PERCN";
+            case SYNTH:   return "SYNTH";
+            case SAMPLER: return "SAMP";
+            //case GRANULAR:return "GRAIN";
+            //case PERC:    return "PERCN";
             default:            return "UNKNOWN";
         }
     }
@@ -51,29 +51,14 @@ namespace Sequencer {
 
         Track &trk = curSeq().tracks[t];
 
-        // If same type, do nothing
         if (trk.type == type) return;
-        trk.type = type;
 
-        // Optional: clear pattern when switching engine
-        //trk.pattern.clear();
+        trk.type = type;
 
         AudioEngine::allNotesOff();
         Display::writeStr("ttrack.txt", trackTypeToStr(type));
     }
 
-    void assignTrackToEngine(uint8_t engineId) {
-        uint8_t t = getCurrentTrack();
-        if (t >= MAX_TRACKS) return;
-
-        Track &trk = curSeq().tracks[t];
-
-        trk.engineId = engineId;
-
-        //curSeq().tracks[track].engineId = engineId;
-        AudioEngine::allNotesOff();
-        Display::writeNum("engID.val", engineId + 1);
-    }
 
     void setCurrentTrack(uint8_t t) {
         if (t >= MAX_TRACKS) return;
@@ -82,7 +67,6 @@ namespace Sequencer {
 
         Display::writeNum("ntrack.val", currentTrack + 1);
         Display::writeStr("ttrack.txt", trackTypeToStr(tr.type));
-        Display::writeNum("engID.val", tr.engineId + 1);
 
         // Auto-create track if not active
         if (!tr.active) {
@@ -1145,8 +1129,7 @@ namespace Sequencer {
     void initTrack(Track& tr, uint8_t trackIndex) {
         tr.active   = true;
         tr.mute     = false;
-        tr.type     = TRACK_SYNTH;
-        tr.engineId = trackIndex % MAX_ENGINES; 
+        //tr.type     = SAMPLER;
         tr.midiCh   = 1;
 
         // Allocate a pattern slot for this track
